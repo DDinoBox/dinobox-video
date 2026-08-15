@@ -1,0 +1,3179 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>시네마틱 쇼츠 제작 대시보드</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f4ee;
+      --surface: #fffdfa;
+      --surface-2: #ede9df;
+      --ink: #25231f;
+      --muted: #6f6a5f;
+      --line: #d8d1c2;
+      --teal: #177a73;
+      --green: #4d7b38;
+      --amber: #a86618;
+      --red: #b94b3f;
+      --violet: #5f587b;
+      --shadow: 0 18px 48px rgba(42, 36, 25, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background:
+        linear-gradient(180deg, rgba(255, 253, 250, 0.75), rgba(246, 244, 238, 1)),
+        var(--bg);
+      color: var(--ink);
+    }
+
+    button,
+    select {
+      font: inherit;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+    }
+
+    .sidebar {
+      padding: 24px 18px;
+      background: #282a26;
+      color: #f7f2e8;
+      border-right: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .brand {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 28px;
+    }
+
+    .brand strong {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0;
+    }
+
+    .brand span {
+      color: #d8d0bf;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .project-switcher {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 22px;
+    }
+
+    .project-switcher label,
+    .section-kicker {
+      color: #c9bfaa;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .project-switcher select {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 6px;
+      background: #34362f;
+      color: #fff7e8;
+      padding: 0 10px;
+    }
+
+    .nav {
+      display: grid;
+      gap: 8px;
+    }
+
+    .nav button {
+      width: 100%;
+      min-height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border: 0;
+      border-radius: 6px;
+      color: #eee5d4;
+      background: transparent;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .nav button[aria-pressed="true"] {
+      background: #f0e7d4;
+      color: #222018;
+    }
+
+    .nav-icon {
+      width: 24px;
+      height: 24px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.1);
+      font-size: 13px;
+    }
+
+    .nav button[aria-pressed="true"] .nav-icon {
+      background: rgba(23, 122, 115, 0.16);
+      color: var(--teal);
+    }
+
+    main {
+      min-width: 0;
+      padding: 26px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 22px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 26px;
+      font-weight: 600;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      max-width: 780px;
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--teal);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .flow-map {
+      margin-bottom: 18px;
+      overflow: hidden;
+    }
+
+    .flow-map-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 18px 0;
+    }
+
+    .flow-map-header h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .flow-map-header span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .current-step-panel {
+      margin: 14px 18px 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) repeat(3, minmax(160px, 0.7fr));
+      gap: 10px;
+    }
+
+    .current-step-main,
+    .current-step-detail {
+      min-height: 104px;
+      padding: 13px;
+      border-radius: 8px;
+      background: #f4f0e7;
+    }
+
+    .current-step-main {
+      border-left: 4px solid var(--teal);
+    }
+
+    .current-step-main span,
+    .current-step-detail span {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .current-step-main strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .current-step-main p,
+    .current-step-detail p {
+      margin: 0;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.48;
+    }
+
+    .flow-scroll {
+      overflow-x: auto;
+      padding: 16px 18px 18px;
+    }
+
+    .flow-track {
+      min-width: 1320px;
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+    }
+
+    .flow-step {
+      width: 84px;
+      min-height: 88px;
+      position: relative;
+      display: grid;
+      grid-template-rows: 24px minmax(0, 1fr);
+      gap: 8px;
+      padding: 9px 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f4f0e7;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.28;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    button.flow-step {
+      font: inherit;
+    }
+
+    .flow-step::after {
+      content: "";
+      position: absolute;
+      top: 24px;
+      right: -8px;
+      width: 8px;
+      height: 2px;
+      background: var(--line);
+    }
+
+    .flow-step:last-child::after {
+      display: none;
+    }
+
+    .flow-index {
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      background: var(--surface-2);
+      color: var(--ink);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .flow-label {
+      min-width: 0;
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+    }
+
+    .flow-step.done {
+      background: rgba(77, 123, 56, 0.12);
+      color: #405d31;
+      border-color: rgba(77, 123, 56, 0.32);
+    }
+
+    .flow-step.done .flow-index {
+      background: rgba(77, 123, 56, 0.2);
+      color: var(--green);
+    }
+
+    .flow-step.current {
+      background: rgba(23, 122, 115, 0.14);
+      border-color: rgba(23, 122, 115, 0.42);
+      color: var(--ink);
+      box-shadow: 0 10px 26px rgba(23, 122, 115, 0.16);
+    }
+
+    .flow-step.current .flow-index {
+      background: var(--teal);
+      color: #fffdfa;
+    }
+
+    .flow-step[aria-pressed="true"] {
+      outline: 2px solid rgba(23, 122, 115, 0.34);
+      outline-offset: 2px;
+    }
+
+    .flow-step.blocked {
+      background: rgba(185, 75, 63, 0.11);
+      border-color: rgba(185, 75, 63, 0.28);
+      color: #7b342d;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .panel-header h2 {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 600;
+    }
+
+    .panel-header span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .workflow {
+      display: grid;
+      gap: 0;
+    }
+
+    .stage {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) 132px;
+      gap: 12px;
+      padding: 15px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .stage:last-child {
+      border-bottom: 0;
+    }
+
+    .stage-number {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: var(--surface-2);
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .stage h3 {
+      margin: 0 0 7px;
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .stage p {
+      margin: 0 0 8px;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 13px;
+    }
+
+    .stage-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #f0ece2;
+      color: #514c42;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .tag.done {
+      background: rgba(77, 123, 56, 0.13);
+      color: var(--green);
+    }
+
+    .tag.manual {
+      background: rgba(168, 102, 24, 0.14);
+      color: var(--amber);
+    }
+
+    .tag.auto {
+      background: rgba(23, 122, 115, 0.14);
+      color: var(--teal);
+    }
+
+    .dev-status {
+      align-self: center;
+      justify-self: end;
+      display: grid;
+      gap: 6px;
+      width: 124px;
+    }
+
+    .dev-status strong {
+      font-size: 12px;
+      font-weight: 600;
+      text-align: right;
+    }
+
+    .meter {
+      height: 7px;
+      border-radius: 999px;
+      background: #e5ded0;
+      overflow: hidden;
+    }
+
+    .meter span {
+      display: block;
+      height: 100%;
+      background: var(--teal);
+    }
+
+    .side-stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding: 16px 18px;
+    }
+
+    .metric {
+      min-height: 92px;
+      padding: 12px;
+      border-radius: 8px;
+      background: #f4f0e7;
+      display: grid;
+      align-content: space-between;
+      gap: 8px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .metric strong {
+      font-size: 22px;
+      font-weight: 600;
+    }
+
+    .studio-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .form-stack,
+    .result-stack {
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .field {
+      display: grid;
+      gap: 7px;
+    }
+
+    .field label {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .field input,
+    .field select,
+    .field textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fffdfa;
+      color: var(--ink);
+      padding: 10px;
+      font: inherit;
+      font-size: 14px;
+    }
+
+    .field textarea {
+      min-height: 116px;
+      resize: vertical;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .segment {
+      min-height: 58px;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f4f0e7;
+      color: var(--ink);
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .segment[aria-pressed="true"] {
+      border-color: rgba(23, 122, 115, 0.5);
+      background: rgba(23, 122, 115, 0.13);
+    }
+
+    .segment strong {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .segment span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .primary-action {
+      min-height: 42px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--teal);
+      color: #fffdfa;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .result-card {
+      padding: 14px;
+      border-radius: 8px;
+      background: #f4f0e7;
+      display: grid;
+      gap: 9px;
+    }
+
+    .result-card h3 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .result-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .score-row {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .score {
+      min-height: 64px;
+      padding: 9px;
+      border-radius: 8px;
+      background: #fffdfa;
+      border: 1px solid var(--line);
+      display: grid;
+      align-content: space-between;
+    }
+
+    .score span {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.25;
+    }
+
+    .score strong {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .studio-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .studio-tab {
+      min-height: 34px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f4f0e7;
+      color: var(--ink);
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .studio-tab[aria-pressed="true"] {
+      border-color: rgba(23, 122, 115, 0.5);
+      background: rgba(23, 122, 115, 0.13);
+      color: var(--teal);
+      font-weight: 600;
+    }
+
+    .studio-board {
+      padding: 18px;
+      display: grid;
+      gap: 18px;
+    }
+
+    .studio-pane-view {
+      display: none;
+    }
+
+    .studio-pane-view.active {
+      display: grid;
+      gap: 18px;
+    }
+
+    .studio-section {
+      display: grid;
+      gap: 12px;
+    }
+
+    .studio-section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 12px;
+    }
+
+    .studio-section-head h3 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .studio-section-head span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .control-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .control-tile {
+      min-height: 74px;
+      display: grid;
+      align-content: space-between;
+      gap: 6px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f4f0e7;
+      color: var(--ink);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .control-tile[aria-pressed="true"] {
+      border-color: rgba(23, 122, 115, 0.5);
+      background: rgba(23, 122, 115, 0.13);
+    }
+
+    .control-tile strong {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .control-tile span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .topic-picker {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.8fr) minmax(260px, 1fr) minmax(280px, 0.9fr);
+      gap: 12px;
+      align-items: start;
+    }
+
+    .picker-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fffdfa;
+      overflow: hidden;
+    }
+
+    .picker-panel.disabled {
+      opacity: 0.62;
+    }
+
+    .picker-panel[hidden] {
+      display: none;
+    }
+
+    .picker-panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      background: #f4f0e7;
+    }
+
+    .picker-panel-header strong {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .picker-panel-header span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .picker-list {
+      display: grid;
+    }
+
+    .picker-row {
+      width: 100%;
+      min-height: 48px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 12px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      color: var(--ink);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .picker-row:last-child {
+      border-bottom: 0;
+    }
+
+    .picker-row[aria-pressed="true"] {
+      background: rgba(23, 122, 115, 0.1);
+    }
+
+    .picker-row strong {
+      display: block;
+      margin-bottom: 2px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .picker-row span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .picker-row .row-mark {
+      color: var(--teal);
+      font-size: 12px;
+      font-weight: 600;
+      visibility: hidden;
+    }
+
+    .picker-row[aria-pressed="true"] .row-mark {
+      visibility: visible;
+    }
+
+    .picker-row.add-row {
+      color: var(--teal);
+      font-weight: 600;
+    }
+
+    .empty-subtopics {
+      padding: 18px 12px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .finder-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fffdfa;
+      overflow: hidden;
+    }
+
+    .finder-panel[hidden] {
+      display: none;
+    }
+
+    .finder-body {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+    }
+
+    .step-label {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 26px;
+      height: 26px;
+      border-radius: 999px;
+      background: var(--teal);
+      color: #fffdfa;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .quantity-options {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .quantity-options span {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .quantity-options input {
+      width: 76px;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fffdfa;
+      color: var(--ink);
+      padding: 6px 8px;
+      font: inherit;
+      font-size: 13px;
+    }
+
+    .candidate-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .topic-list {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fffdfa;
+    }
+
+    .topic-table {
+      width: 100%;
+      min-width: 1080px;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .topic-table th,
+    .topic-table td {
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .topic-table th {
+      background: #f4f0e7;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .topic-table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .topic-table tr.selected td {
+      background: rgba(23, 122, 115, 0.08);
+    }
+
+    .topic-table tr.processing td {
+      background: rgba(168, 102, 24, 0.08);
+      color: var(--muted);
+    }
+
+    .topic-title-cell {
+      display: grid;
+      gap: 4px;
+      min-width: 260px;
+    }
+
+    .topic-title-cell strong {
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.35;
+    }
+
+    .topic-title-cell span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .score-cell {
+      text-align: center;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+
+    .topic-actions {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .candidate-card {
+      min-height: 240px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f4f0e7;
+      display: grid;
+      gap: 10px;
+      align-content: start;
+    }
+
+    .candidate-card.selected {
+      border-color: rgba(23, 122, 115, 0.5);
+      box-shadow: 0 10px 24px rgba(23, 122, 115, 0.14);
+    }
+
+    .candidate-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 8px;
+    }
+
+    .candidate-title h4 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+      line-height: 1.35;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #fffdfa;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .status-badge.pass {
+      color: var(--green);
+      border-color: rgba(77, 123, 56, 0.3);
+      background: rgba(77, 123, 56, 0.12);
+    }
+
+    .status-badge.hold {
+      color: var(--amber);
+      border-color: rgba(168, 102, 24, 0.3);
+      background: rgba(168, 102, 24, 0.12);
+    }
+
+    .status-badge.reject {
+      color: var(--red);
+      border-color: rgba(185, 75, 63, 0.28);
+      background: rgba(185, 75, 63, 0.1);
+    }
+
+    .candidate-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .mini-scores {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 5px;
+    }
+
+    .mini-score {
+      min-height: 42px;
+      padding: 6px;
+      border-radius: 6px;
+      background: #fffdfa;
+      border: 1px solid var(--line);
+      text-align: center;
+    }
+
+    .mini-score span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.2;
+    }
+
+    .mini-score strong {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .card-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+
+    .small-action {
+      min-height: 30px;
+      padding: 5px 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fffdfa;
+      color: var(--ink);
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .small-action:disabled,
+    .primary-action:disabled {
+      cursor: wait;
+      opacity: 0.72;
+    }
+
+    .small-action.is-loading,
+    .primary-action.is-loading,
+    .inline-loader {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+    }
+
+    .small-action.is-loading::before,
+    .primary-action.is-loading::before,
+    .inline-loader::before {
+      content: "";
+      width: 13px;
+      height: 13px;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 999px;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .small-action.primary {
+      border-color: var(--teal);
+      background: var(--teal);
+      color: #fffdfa;
+    }
+
+    .script-workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr);
+      gap: 14px;
+    }
+
+    .script-pane {
+      padding: 14px;
+      border-radius: 8px;
+      background: #f4f0e7;
+      display: grid;
+      gap: 12px;
+      align-content: start;
+    }
+
+    .script-pane h4 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .script-pane p,
+    .script-pane li {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .script-pane p,
+    .script-pane ul {
+      margin: 0;
+    }
+
+    .script-pane ul {
+      padding-left: 18px;
+    }
+
+    .script-box {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fffdfa;
+      display: grid;
+      gap: 10px;
+    }
+
+    .script-row {
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr);
+      gap: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .script-row:last-child {
+      padding-bottom: 0;
+      border-bottom: 0;
+    }
+
+    .script-time {
+      color: var(--teal);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .script-text strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .script-text span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .script-empty {
+      padding: 14px;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+      background: #fffdfa;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .tts-box {
+      white-space: pre-wrap;
+      color: var(--ink);
+      line-height: 1.65;
+    }
+
+    .voice-lab {
+      display: grid;
+      grid-template-columns: minmax(260px, 0.72fr) minmax(0, 1.28fr);
+      gap: 14px;
+    }
+
+    .voice-panel {
+      padding: 14px;
+      border-radius: 8px;
+      background: #f4f0e7;
+      display: grid;
+      gap: 12px;
+      align-content: start;
+    }
+
+    .voice-panel h4,
+    .voice-panel p {
+      margin: 0;
+    }
+
+    .voice-panel h4 {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .voice-panel p {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .voice-presets {
+      display: grid;
+      gap: 8px;
+    }
+
+    .voice-preset-row {
+      width: 100%;
+      min-height: 78px;
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fffdfa;
+      color: var(--ink);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .voice-preset-row[aria-pressed="true"] {
+      border-color: var(--teal);
+      box-shadow: inset 0 0 0 1px var(--teal);
+    }
+
+    .voice-preset-row strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .voice-preset-row span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .voice-preset-row code {
+      color: var(--teal);
+      font-size: 11px;
+      white-space: normal;
+    }
+
+    .env-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .env-item {
+      padding: 9px;
+      border-radius: 8px;
+      background: #fffdfa;
+      border: 1px solid var(--line);
+      display: grid;
+      gap: 4px;
+    }
+
+    .env-item strong {
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .env-item span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .tts-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      background: #fffdfa;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .tts-table th,
+    .tts-table td {
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .tts-table th {
+      background: #ede9df;
+      color: var(--ink);
+      text-align: left;
+      font-weight: 600;
+    }
+
+    .tts-table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .tts-table .segment-text {
+      color: var(--ink);
+      font-size: 13px;
+    }
+
+    .tts-summary-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .asset-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .asset-step {
+      min-height: 96px;
+      padding: 11px;
+      border-radius: 8px;
+      background: #f4f0e7;
+      border: 1px solid var(--line);
+      display: grid;
+      align-content: space-between;
+      gap: 9px;
+    }
+
+    .asset-step strong {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .asset-step span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .todo {
+      padding: 12px 18px 18px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .todo-item {
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .check {
+      width: 18px;
+      height: 18px;
+      margin-top: 1px;
+      display: grid;
+      place-items: center;
+      border-radius: 5px;
+      background: rgba(23, 122, 115, 0.14);
+      color: var(--teal);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .domain {
+      padding: 16px 18px 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .domain-row {
+      display: grid;
+      gap: 5px;
+    }
+
+    .domain-row strong {
+      font-size: 13px;
+    }
+
+    .domain-row span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .view {
+      display: none;
+    }
+
+    .view.active {
+      display: block;
+    }
+
+    .roadmap {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      padding: 18px;
+    }
+
+    .roadmap-phase {
+      background: #f4f0e7;
+      border-radius: 8px;
+      padding: 14px;
+      min-height: 190px;
+      display: grid;
+      align-content: start;
+      gap: 10px;
+    }
+
+    .roadmap-phase h3 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .roadmap-phase ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .note {
+      margin: 18px;
+      padding: 14px;
+      border-left: 4px solid var(--teal);
+      background: #f4f0e7;
+      border-radius: 6px;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 14px;
+    }
+
+    @media (max-width: 980px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: static;
+      }
+
+      .layout,
+      .roadmap,
+      .studio-layout,
+      .topic-picker,
+      .control-grid,
+      .candidate-grid,
+      .script-workspace,
+      .voice-lab,
+      .asset-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .current-step-panel {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .flow-track {
+        min-width: 1120px;
+      }
+    }
+
+    @media (max-width: 620px) {
+      main {
+        padding: 18px;
+      }
+
+      .topbar,
+      .panel-header,
+      .flow-map-header {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .stage {
+        grid-template-columns: 34px minmax(0, 1fr);
+      }
+
+      .dev-status {
+        grid-column: 2;
+        justify-self: stretch;
+        width: auto;
+      }
+
+      .dev-status strong {
+        text-align: left;
+      }
+
+      .summary-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .current-step-panel {
+        grid-template-columns: 1fr;
+      }
+
+      .flow-track {
+        min-width: 980px;
+      }
+
+      .flow-step {
+        width: 76px;
+      }
+
+      .segmented,
+      .score-row,
+      .mini-scores {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <strong>Cinematic Shorts OS</strong>
+        <span>역사 주제로 시작하는 설명 쇼츠 제작 파이프라인 매니저</span>
+      </div>
+
+      <div class="project-switcher">
+        <label for="project">현재 프로젝트</label>
+        <select id="project">
+          <option>History MVP / 기획 단계</option>
+        </select>
+      </div>
+
+      <div class="section-kicker">대시보드</div>
+      <nav class="nav" aria-label="대시보드 보기">
+        <button type="button" class="nav-button" data-view="workflow" aria-pressed="true">
+          <span class="nav-icon">01</span>
+          워크플로우
+        </button>
+        <button type="button" class="nav-button" data-view="studio" aria-pressed="false">
+          <span class="nav-icon">02</span>
+          제작 작업실
+        </button>
+        <button type="button" class="nav-button" data-view="roadmap" aria-pressed="false">
+          <span class="nav-icon">03</span>
+          개발 계획
+        </button>
+      </nav>
+    </aside>
+
+    <main>
+      <div class="topbar">
+        <div>
+          <h1>역사 쇼츠 제작 자동화 계획</h1>
+        </div>
+        <div class="status-pill">제작 단계: 주제 입력 대기</div>
+      </div>
+
+      <section class="view active" id="workflow-view">
+        <section class="panel flow-map" aria-labelledby="flow-map-title">
+          <div class="flow-map-header">
+            <h2 id="flow-map-title">전체 제작 흐름</h2>
+            <span>단계를 누르면 필요한 입력과 개발 상태를 바로 확인</span>
+          </div>
+          <div class="current-step-panel" aria-live="polite">
+            <div class="current-step-main">
+              <span>선택한 단계</span>
+              <strong id="selected-step-title">01. 주제 입력</strong>
+              <p id="selected-step-action">쇼츠로 만들 조선시대 역사 주제 후보를 1~3개 적는다. 길이는 고정값이 아니라 희망 범위만 잡는다.</p>
+            </div>
+            <div class="current-step-detail">
+              <span>필요한 입력</span>
+              <p id="selected-step-input">주제 후보, 희망 길이 범위</p>
+            </div>
+            <div class="current-step-detail">
+              <span>개발해야 할 기능</span>
+              <p id="selected-step-dev">프로젝트 생성 폼 또는 CLI, 폴더명 자동 생성, project.yaml 저장</p>
+            </div>
+            <div class="current-step-detail">
+              <span>현재 상태</span>
+              <p id="selected-step-status">화면 초안만 있음. 입력 저장 기능은 아직 없음.</p>
+            </div>
+          </div>
+          <div class="flow-scroll">
+            <div class="flow-track" id="flow-track"></div>
+          </div>
+        </section>
+
+        <div class="layout">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>제작 워크플로우</h2>
+              <span>각 단계의 필요 입력, 산출물, 개발 상태</span>
+            </div>
+            <div class="workflow" id="workflow-list"></div>
+          </section>
+
+          <div class="side-stack">
+            <section class="panel">
+              <div class="panel-header">
+                <h2>진행 요약</h2>
+                <span>MVP 기준</span>
+              </div>
+              <div class="summary-grid">
+                <div class="metric">
+                  <span>첫 도메인</span>
+                  <strong>역사</strong>
+                </div>
+                <div class="metric">
+                  <span>현재 자동화</span>
+                  <strong>수동 보조</strong>
+                </div>
+                <div class="metric">
+                  <span>개발 완료</span>
+                  <strong>2/11</strong>
+                </div>
+                <div class="metric">
+                  <span>다음 목표</span>
+                  <strong>CLI</strong>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h2>다음 할 일</h2>
+                <span>가까운 개발 순서</span>
+              </div>
+              <div class="todo">
+                <div class="todo-item"><span class="check">1</span><span>사실 검증 상태 파일 만들기</span></div>
+                <div class="todo-item"><span class="check">2</span><span>검증 실패 주제를 폐기 목록에 기록하기</span></div>
+                <div class="todo-item"><span class="check">3</span><span>프로젝트 생성 명령 만들기</span></div>
+                <div class="todo-item"><span class="check">4</span><span>상태 파일을 읽어 대시보드에 반영하기</span></div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h2>역사 도메인</h2>
+                <span>초기 기준</span>
+              </div>
+              <div class="domain">
+                <div class="domain-row">
+                  <strong>핵심 질문</strong>
+                  <span>왜 이 사건이나 선택이 중요했는가?</span>
+                </div>
+                <div class="domain-row">
+                  <strong>핵심 갈등</strong>
+                  <span>어떤 세력, 조건, 제약이 충돌했는가?</span>
+                </div>
+                <div class="domain-row">
+                  <strong>보이는 흐름</strong>
+                  <span>사람, 군대, 물자, 돈, 정보, 권력, 영토의 이동</span>
+                </div>
+                <div class="domain-row">
+                  <strong>전환점</strong>
+                  <span>결정, 장소, 기술, 실수, 우연 중 결과를 바꾼 요소</span>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="studio-view">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>제작 작업실</h2>
+            <span>mock 데이터로 잡아둔 실제 제작 화면 틀</span>
+          </div>
+
+          <div class="studio-tabs" role="group" aria-label="제작 작업실 단계">
+            <button type="button" class="studio-tab" data-studio-pane="topics" aria-pressed="true">쇼츠 주제</button>
+            <button type="button" class="studio-tab" data-studio-pane="script" aria-pressed="false">대본 작업</button>
+            <button type="button" class="studio-tab" data-studio-pane="tts" aria-pressed="false">TTS/목소리</button>
+            <button type="button" class="studio-tab" data-studio-pane="shotlist" aria-pressed="false">장면표</button>
+            <button type="button" class="studio-tab" data-studio-pane="prompts" aria-pressed="false">프롬프트</button>
+            <button type="button" class="studio-tab" data-studio-pane="assets" aria-pressed="false">자산 검수</button>
+            <button type="button" class="studio-tab" data-studio-pane="publish" aria-pressed="false">편집/게시</button>
+          </div>
+
+          <div class="studio-board">
+            <section class="studio-pane-view active" id="studio-pane-topics">
+              <section class="studio-section">
+                <div class="studio-section-head">
+                  <div>
+                    <h3>쇼츠 주제 찾기</h3>
+                    <span>메인 주제를 누르면 세부 주제가 그 분야에 맞게 바뀌고, 후보는 리스트로 비교</span>
+                  </div>
+                </div>
+
+                <div class="topic-picker">
+                  <div class="picker-panel">
+                    <div class="picker-panel-header">
+                      <strong><span class="step-label">1</span> 메인 주제</strong>
+                      <span>먼저 하나 선택</span>
+                    </div>
+                    <div class="picker-list" aria-label="메인 주제">
+                      <button type="button" class="picker-row main-topic" data-topic="history" aria-pressed="false">
+                        <span><strong>역사</strong><span>사건, 제도, 전쟁, 도시, 선택</span></span>
+                        <span class="row-mark">선택</span>
+                      </button>
+                      <button type="button" class="picker-row main-topic" data-topic="engineering" aria-pressed="false">
+                        <span><strong>공학</strong><span>구조, 하중, 유체, 기계, 항공</span></span>
+                        <span class="row-mark">선택</span>
+                      </button>
+                      <button type="button" class="picker-row main-topic" data-topic="science" aria-pressed="false">
+                        <span><strong>과학</strong><span>실험, 현상, 생물, 우주, 재료</span></span>
+                        <span class="row-mark">선택</span>
+                      </button>
+                      <button type="button" class="picker-row add-row" aria-pressed="false">
+                        <span><strong>+ 메인 주제 추가</strong><span>군사, 건축, 경제 등은 나중에 확장</span></span>
+                        <span class="row-mark">추가</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="picker-panel" id="subtopic-panel" hidden>
+                    <div class="picker-panel-header">
+                      <strong><span class="step-label">2</span> 세부 주제</strong>
+                      <span id="subtopic-panel-hint">메인 주제에 맞춰 표시</span>
+                    </div>
+                    <div class="picker-list" id="subtopic-grid" aria-label="세부 주제"></div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="studio-section">
+                <div class="studio-section-head">
+                  <div>
+                    <h3>후보 주제 리스트</h3>
+                    <span>10개 이상 비교할 때는 카드보다 리스트가 낫고, 점수와 상태를 한 번에 보기 쉬움</span>
+                  </div>
+                </div>
+
+                <div class="topic-list">
+                  <table class="topic-table">
+                    <thead>
+                      <tr>
+                        <th>후보 주제</th>
+                        <th>상태</th>
+                        <th>검증</th>
+                        <th>시각</th>
+                        <th>의외</th>
+                        <th>길이</th>
+                        <th>위험</th>
+                        <th>액션</th>
+                      </tr>
+                    </thead>
+                    <tbody id="topic-results">
+                      <tr>
+                        <td colspan="8">
+                          <div class="topic-title-cell">
+                            <strong>아직 생성된 후보 주제가 없습니다.</strong>
+                            <span>메인 주제를 고르면 저장된 후보가 보이고, 세부 주제를 고르면 그 범위로 좁혀집니다.</span>
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div class="finder-panel" id="finder-panel" hidden>
+                  <div class="picker-panel-header">
+                    <strong>주제 더 찾기</strong>
+                    <span>선택한 범위에 새 후보를 추가</span>
+                  </div>
+                  <div class="finder-body">
+                    <div class="quantity-options" role="group" aria-label="찾을 주제 개수">
+                      <span>찾을 개수</span>
+                      <button type="button" class="small-action topic-count-preset" data-count="1">1개</button>
+                      <button type="button" class="small-action topic-count-preset" data-count="5">5개</button>
+                      <button type="button" class="small-action topic-count-preset primary" data-count="10">10개</button>
+                      <input id="topic-count" type="number" min="1" max="30" value="10" aria-label="직접 입력할 주제 개수">
+                    </div>
+                    <button type="button" class="primary-action" id="find-topics-button">쇼츠 주제 찾기</button>
+                  </div>
+                </div>
+              </section>
+            </section>
+
+            <section class="studio-pane-view" id="studio-pane-script">
+              <section class="studio-section">
+                <div class="studio-section-head">
+                  <div>
+                    <h3>대본 작업</h3>
+                    <span>선택된 주제 하나의 검증 결과, 핵심 구조, 대본 초안, 승인 상태를 관리</span>
+                  </div>
+                  <div class="card-actions">
+                    <button type="button" class="small-action" id="generate-script-button" disabled>대본 생성</button>
+                    <button type="button" class="small-action primary" id="approve-script-button" disabled>대본 승인</button>
+                  </div>
+                </div>
+
+                <div class="script-workspace">
+                  <aside class="script-pane" id="script-summary-pane">
+                    <h4>선택된 후보</h4>
+                    <p id="script-topic-summary">쇼츠 주제 리스트에서 검증 또는 대본을 실행할 후보를 선택하세요.</p>
+
+                    <h4>사실 검증</h4>
+                    <div id="fact-check-summary" class="script-empty">아직 검증 결과가 없습니다.</div>
+
+                    <h4>핵심 구조</h4>
+                    <div id="story-core-summary" class="script-empty">PASS 후 대본을 생성하면 표시됩니다.</div>
+                  </aside>
+
+                  <div class="script-pane">
+                    <h4 id="script-output-title">제작용 대본</h4>
+                    <div id="production-script-output" class="script-empty">아직 생성된 대본이 없습니다.</div>
+
+                    <h4>TTS용 텍스트</h4>
+                    <div id="tts-script-output" class="script-box tts-box">아직 생성된 TTS 텍스트가 없습니다.</div>
+                  </div>
+                </div>
+              </section>
+            </section>
+
+            <section class="studio-pane-view" id="studio-pane-tts">
+              <section class="studio-section">
+                <div class="studio-section-head">
+                  <div>
+                    <h3>TTS / 목소리</h3>
+                    <span>고정 목소리 프리셋, 로컬 엔진 준비 상태, 장면별 음성 길이 관리</span>
+                  </div>
+                  <div class="card-actions">
+                    <button type="button" class="small-action" id="refresh-tts-button">상태 새로고침</button>
+                    <button type="button" class="small-action primary" id="prepare-tts-button" disabled>TTS 세그먼트 준비</button>
+                  </div>
+                </div>
+
+                <div class="voice-lab">
+                  <aside class="voice-panel">
+                    <h4>목소리 프리셋</h4>
+                    <div id="voice-presets" class="voice-presets">
+                      <div class="script-empty">목소리 프리셋을 불러오는 중입니다.</div>
+                    </div>
+                    <button type="button" class="small-action" id="add-voice-button">목소리 추가</button>
+
+                    <h4>로컬 준비 상태</h4>
+                    <div class="env-grid" id="tts-environment">
+                      <div class="env-item"><strong>확인 전</strong><span>상태 새로고침을 누르면 표시됩니다.</span></div>
+                    </div>
+                  </aside>
+
+                  <div class="voice-panel">
+                    <h4>현재 대본 TTS 계획</h4>
+                    <p id="tts-topic-summary">대본 작업에서 주제를 선택하면 이곳에 TTS 계획이 표시됩니다.</p>
+                    <div class="tts-summary-bar" id="tts-run-summary">
+                      <span class="status-badge hold">준비 전</span>
+                    </div>
+                    <div id="tts-segments-output" class="script-empty">아직 준비된 TTS 세그먼트가 없습니다.</div>
+                  </div>
+                </div>
+              </section>
+            </section>
+
+            <section class="studio-pane-view" id="studio-pane-shotlist">
+              <section class="studio-section">
+                <div class="studio-section-head">
+                  <div>
+                    <h3>장면표</h3>
+                    <span>승인 대본과 실제 TTS 길이를 기준으로 장면 ID와 키프레임을 나누는 화면</span>
+                  </div>
+                </div>
+                <div class="asset-grid">
+                  <div class="asset-step"><strong>S01A</strong><span>변방 봉수대에 위기 신호 발생</span><span class="status-badge hold">대기</span></div>
+                  <div class="asset-step"><strong>S02A</strong><span>산 능선을 따라 신호 이동</span><span class="status-badge hold">대기</span></div>
+                  <div class="asset-step"><strong>S03A</strong><span>한양 봉수대로 정보 도착</span><span class="status-badge hold">대기</span></div>
+                  <div class="asset-step"><strong>S04A</strong><span>날씨와 관리 상태라는 한계</span><span class="status-badge hold">대기</span></div>
+                </div>
+              </section>
+            </section>
+
+            <section class="studio-pane-view" id="studio-pane-prompts">
+              <section class="studio-section">
+                <div class="studio-section-head">
+                  <div>
+                    <h3>프롬프트</h3>
+                    <span>CLEAN, INFO, 4초 영상 프롬프트를 단계별로 생성하고 저장하는 화면</span>
+                  </div>
+                </div>
+                <div class="asset-grid">
+                  <div class="asset-step"><strong>CLEAN</strong><span>글자 없는 원본 이미지 프롬프트</span><span class="status-badge hold">대기</span></div>
+                  <div class="asset-step"><strong>INFO</strong><span>경로선과 짧은 라벨 추가 프롬프트</span><span class="status-badge hold">대기</span></div>
+                  <div class="asset-step"><strong>VIDEO</strong><span>CLEAN에서 INFO가 조립되는 영상 프롬프트</span><span class="status-badge hold">대기</span></div>
+                  <div class="asset-step"><strong>게시문</strong><span>제목, 설명, 해시태그 초안</span><span class="status-badge hold">대기</span></div>
+                </div>
+              </section>
+            </section>
+
+            <section class="studio-pane-view" id="studio-pane-assets">
+              <section class="studio-section">
+                <div class="studio-section-head">
+                  <div>
+                    <h3>자산 검수</h3>
+                    <span>CLEAN, INFO, MP4 파일 수량과 대응 관계를 확인하는 화면</span>
+                  </div>
+                </div>
+                <div class="asset-grid">
+                  <div class="asset-step"><strong>CLEAN 이미지</strong><span>0개 / 예상 12~16개</span><span class="status-badge hold">대기</span></div>
+                  <div class="asset-step"><strong>INFO 이미지</strong><span>0개 / CLEAN과 1:1 필요</span><span class="status-badge hold">대기</span></div>
+                  <div class="asset-step"><strong>MP4</strong><span>0개 / 4초 원본 클립</span><span class="status-badge hold">대기</span></div>
+                  <div class="asset-step"><strong>정렬</strong><span>파일명 번호와 ID 검수</span><span class="status-badge hold">대기</span></div>
+                </div>
+              </section>
+            </section>
+
+            <section class="studio-pane-view" id="studio-pane-publish">
+              <section class="studio-section">
+                <div class="studio-section-head">
+                  <div>
+                    <h3>편집/게시</h3>
+                    <span>TTS 길이, 컷 길이, 제목과 설명을 관리하는 마지막 화면</span>
+                  </div>
+                </div>
+                <div class="asset-grid">
+                  <div class="asset-step"><strong>TTS</strong><span>실제 길이 미입력</span><span class="status-badge hold">대기</span></div>
+                  <div class="asset-step"><strong>컷 리스트</strong><span>장면별 사용 구간 미생성</span><span class="status-badge hold">대기</span></div>
+                  <div class="asset-step"><strong>제목</strong><span>추천 제목 1개와 대체 3개</span><span class="status-badge hold">대기</span></div>
+                  <div class="asset-step"><strong>설명</strong><span>요약, 단순화 고지, 해시태그</span><span class="status-badge hold">대기</span></div>
+                </div>
+              </section>
+            </section>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="roadmap-view">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>개발 로드맵</h2>
+            <span>수동에서 완전 자동화까지</span>
+          </div>
+          <div class="roadmap">
+            <article class="roadmap-phase">
+              <h3>1단계: 수동 보조</h3>
+              <ul>
+                <li>대시보드</li>
+                <li>프로젝트 폴더 생성</li>
+                <li>도메인 템플릿</li>
+                <li>프롬프트 파일 생성</li>
+              </ul>
+            </article>
+            <article class="roadmap-phase">
+              <h3>2단계: 반자동 관리</h3>
+              <ul>
+                <li>이미지 수량 검사</li>
+                <li>화면비 검사</li>
+                <li>MP4 길이 검사</li>
+                <li>파일명 정렬</li>
+              </ul>
+            </article>
+            <article class="roadmap-phase">
+              <h3>3단계: 검수 보조</h3>
+              <ul>
+                <li>콘택트시트 생성</li>
+                <li>대표 프레임 추출</li>
+                <li>CLEAN/INFO 비교</li>
+                <li>편집 컷 리스트</li>
+              </ul>
+            </article>
+            <article class="roadmap-phase">
+              <h3>4단계: 자동 생성</h3>
+              <ul>
+                <li>TTS API</li>
+                <li>이미지 API</li>
+                <li>영상 API</li>
+                <li>최종 렌더링</li>
+              </ul>
+            </article>
+          </div>
+          <p class="note">자동화는 한번에 끝까지 붙이지 않고, 실패 비용이 낮은 파일 관리와 검수부터 시작합니다. 생성 API 연결은 워크플로우와 산출물 규격이 안정된 뒤 붙이는 편이 좋습니다.</p>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const currentFlowIndex = 0;
+
+    const pipeline = [
+      {
+        label: "주제 입력",
+        action: "쇼츠로 만들 조선시대 역사 주제 후보를 1~3개 적는다. 길이는 고정값이 아니라 희망 범위만 잡는다.",
+        input: "주제 후보, 희망 길이 범위",
+        dev: "프로젝트 생성 폼 또는 CLI, 폴더명 자동 생성, project.yaml 저장, 기본 도메인 history 자동 적용",
+        status: "화면 초안만 있음. 입력 저장 기능은 아직 없음."
+      },
+      {
+        label: "제작 규칙 적용",
+        action: "프로그램이 역사 도메인 규칙을 자동으로 적용한다. 사용자는 처음에 따로 고르지 않는다.",
+        input: "없음. 첫 MVP는 history 고정",
+        dev: "domains/*.yaml 로더, history 기본값, 나중에 고급 옵션으로 도메인 변경 지원",
+        status: "history.yaml 초안 있음. 자동 적용 로더는 아직 없음."
+      },
+      {
+        label: "조사 / 자료 정리",
+        action: "주제의 핵심 주장과 관련 자료를 모아 출처별로 정리한다.",
+        input: "검색어, 자료 링크, 메모",
+        dev: "SOURCES.md, RESEARCH_NOTES.md 템플릿 생성, 출처 유형 분류",
+        status: "형식 설계 전. 다음 개발 대상."
+      },
+      {
+        label: "사실 검증",
+        action: "핵심 사실이 확인되지 않으면 PASS로 넘기지 않고 HOLD 또는 REJECT 처리한다.",
+        input: "핵심 주장, 확인 출처, 충돌 자료",
+        dev: "FACT_CHECK.md 생성, PASS/HOLD/REJECT 판정 저장, 폐기 목록 기록",
+        status: "검증 규칙 문서 초안 완료. 자동 생성은 아직 없음."
+      },
+      {
+        label: "핵심 질문 / 흐름 정의",
+        action: "시청자가 끝까지 볼 질문, 갈등, 이동하는 힘이나 정보, 전환점을 고정한다.",
+        input: "검증 통과 자료, 핵심 주장",
+        dev: "STORY_CORE.md 템플릿, 도메인별 질문 자동 삽입",
+        status: "역사 도메인 질문 초안 있음."
+      },
+      {
+        label: "대본 생성",
+        action: "제작용 타임라인 대본과 TTS용 텍스트를 만든다.",
+        input: "STORY_CORE.md, FACT_CHECK.md",
+        dev: "대본 프롬프트 템플릿, 승인본 저장",
+        status: "개발 예정."
+      },
+      {
+        label: "사용자 승인",
+        action: "대본을 사람이 확인하고 승인해야 다음 단계로 넘어간다.",
+        input: "대본 승인 또는 수정 요청",
+        dev: "승인 상태 저장, 다음 단계 잠금 해제",
+        status: "개발 예정."
+      },
+      {
+        label: "장면표 / 키프레임",
+        action: "대본을 장면 단위로 나누고 S ID, KF ID를 붙인다.",
+        input: "승인 대본, 실제 TTS 길이",
+        dev: "IMAGE_SEQUENCE.md 생성, ID 중복 검사",
+        status: "개발 예정."
+      },
+      {
+        label: "CLEAN 프롬프트",
+        action: "글자 없는 원본 이미지 생성 프롬프트를 장면별로 만든다.",
+        input: "IMAGE_SEQUENCE.md, 도메인 규칙",
+        dev: "CLEAN_KEYFRAME_PROMPTS.md 생성",
+        status: "개발 예정."
+      },
+      {
+        label: "외부 이미지 생성",
+        action: "사용자가 이미지 생성 도구에서 CLEAN 이미지를 만든 뒤 clean 폴더에 넣는다.",
+        input: "CLEAN 프롬프트, 생성 이미지",
+        dev: "파일 업로드/폴더 감지, 수량 표시",
+        status: "수동 단계."
+      },
+      {
+        label: "CLEAN 검수",
+        action: "실제 이미지를 보고 장면 순서, 시대 고증, 화면비, 중복과 누락을 확인한다.",
+        input: "clean 폴더, 장면표",
+        dev: "이미지 메타데이터 검사, 콘택트시트, 검수 리포트",
+        status: "개발 예정."
+      },
+      {
+        label: "INFO 프롬프트",
+        action: "CLEAN 구도를 유지한 채 경로선, 라벨, 핵심 수치를 추가하는 편집 프롬프트를 만든다.",
+        input: "검수 통과 CLEAN, 장면표",
+        dev: "INFOGRAPHIC_KEYFRAME_PROMPTS.md 생성",
+        status: "개발 예정."
+      },
+      {
+        label: "외부 이미지 편집",
+        action: "사용자가 이미지 편집 모델에서 INFO 이미지를 만든 뒤 info 폴더에 넣는다.",
+        input: "INFO 프롬프트, CLEAN 이미지",
+        dev: "CLEAN/INFO 파일 쌍 감지",
+        status: "수동 단계."
+      },
+      {
+        label: "INFO 검수",
+        action: "CLEAN과 INFO가 같은 구도인지, 라벨과 경로가 사실과 맞는지 확인한다.",
+        input: "clean 폴더, info 폴더, FACT_CHECK.md",
+        dev: "1:1 매칭 리포트, 문제 ID 목록",
+        status: "개발 예정."
+      },
+      {
+        label: "4초 영상 프롬프트",
+        action: "CLEAN에서 시작해 INFO 그래픽이 조립되는 4초 영상 프롬프트를 만든다.",
+        input: "CLEAN/INFO 쌍, 장면표",
+        dev: "VIDEO_GENERATION_PROMPTS.md 생성",
+        status: "개발 예정."
+      },
+      {
+        label: "외부 영상 생성",
+        action: "사용자가 영상 생성 도구에서 MP4를 만든 뒤 video 폴더에 넣는다.",
+        input: "영상 프롬프트, CLEAN/INFO 참조",
+        dev: "MP4 감지, 길이와 화면비 검사",
+        status: "수동 단계."
+      },
+      {
+        label: "MP4 검수 / 정렬",
+        action: "대표 프레임과 INFO를 비교해 순서, 길이, 화면비, 누락, 중복을 확인한다.",
+        input: "video 폴더, info 폴더",
+        dev: "ffprobe 검사, 대표 프레임 추출, 파일명 번호 정렬",
+        status: "개발 예정."
+      },
+      {
+        label: "편집 가이드 / 게시문",
+        action: "TTS 길이에 맞춘 컷 길이와 제목, 설명, 해시태그를 만든다.",
+        input: "TTS 길이, 검수 통과 MP4",
+        dev: "컷 리스트, 게시 텍스트, 편집 체크리스트 생성",
+        status: "개발 예정."
+      }
+    ];
+
+    const stages = [
+      {
+        title: "프로젝트 생성",
+        body: "주제와 희망 길이 범위를 받고 기본 폴더와 상태 파일을 만든다.",
+        input: "주제, 희망 길이 범위",
+        output: "project.yaml, 폴더 구조",
+        mode: "수동 보조",
+        status: "초안 완료",
+        progress: 35
+      },
+      {
+        title: "조사와 출처 정리",
+        body: "공식 자료와 신뢰 가능한 자료를 모아 사실, 해석, 영상적 단순화를 구분한다.",
+        input: "검색어, 자료 링크",
+        output: "SOURCES.md, RESEARCH_NOTES.md",
+        mode: "수동",
+        status: "개발 예정",
+        progress: 10
+      },
+      {
+        title: "사실 검증 게이트",
+        body: "핵심 주장, 연도, 인물, 장소, 원인과 결과가 확인되지 않으면 보류하거나 폐기한다.",
+        input: "출처, 핵심 주장",
+        output: "FACT_CHECK.md, REJECTED_TOPICS.md",
+        mode: "반자동 후보",
+        status: "초안 완료",
+        progress: 30
+      },
+      {
+        title: "핵심 서사 정의",
+        body: "핵심 질문, 갈등, 보이는 흐름, 전환점을 먼저 고정한다.",
+        input: "조사 메모",
+        output: "STORY_CORE.md",
+        mode: "반자동 후보",
+        status: "설계 중",
+        progress: 20
+      },
+      {
+        title: "대본 작성과 승인",
+        body: "시간 구간이 있는 제작용 대본과 TTS용 텍스트를 만든 뒤 사용자 승인을 받는다.",
+        input: "도메인 규칙, 자료",
+        output: "APPROVED_NARRATION_KR.md",
+        mode: "수동 보조",
+        status: "개발 예정",
+        progress: 10
+      },
+      {
+        title: "장면표와 키프레임",
+        body: "새로운 상태 변화와 전환점이 있을 때만 장면을 나누고 ID를 부여한다.",
+        input: "승인 대본, TTS 길이",
+        output: "IMAGE_SEQUENCE.md",
+        mode: "반자동 후보",
+        status: "개발 예정",
+        progress: 10
+      },
+      {
+        title: "CLEAN 프롬프트",
+        body: "글자 없는 시네마틱 이미지 프롬프트를 장면별로 만든다.",
+        input: "장면표",
+        output: "CLEAN_KEYFRAME_PROMPTS.md",
+        mode: "수동 보조",
+        status: "개발 예정",
+        progress: 10
+      },
+      {
+        title: "CLEAN 검수",
+        body: "이미지를 실제로 보고 수량, 화면비, 시대 재현, 중복, 누락을 확인한다.",
+        input: "clean 폴더",
+        output: "검수 리포트",
+        mode: "반자동 후보",
+        status: "개발 예정",
+        progress: 5
+      },
+      {
+        title: "INFO 프롬프트와 검수",
+        body: "CLEAN을 보존한 채 경로선, 라벨, 연도, 세력권 그래픽을 추가한다.",
+        input: "CLEAN 이미지, 장면표",
+        output: "INFOGRAPHIC_KEYFRAME_PROMPTS.md",
+        mode: "수동 보조",
+        status: "개발 예정",
+        progress: 5
+      },
+      {
+        title: "4초 영상 프롬프트와 MP4 검수",
+        body: "CLEAN에서 INFO가 조립되는 영상 프롬프트를 만들고 결과 파일을 검수한다.",
+        input: "CLEAN/INFO 쌍",
+        output: "VIDEO_GENERATION_PROMPTS.md, MP4 리포트",
+        mode: "반자동 후보",
+        status: "개발 예정",
+        progress: 5
+      },
+      {
+        title: "편집과 게시문",
+        body: "TTS 길이에 맞춰 컷 길이를 제안하고 제목, 설명, 해시태그를 만든다.",
+        input: "MP4, TTS 길이",
+        output: "편집 리스트, 게시 텍스트",
+        mode: "자동화 후보",
+        status: "개발 예정",
+        progress: 5
+      }
+    ];
+
+    const workflowList = document.getElementById("workflow-list");
+
+    stages.forEach((stage, index) => {
+      const item = document.createElement("article");
+      item.className = "stage";
+      item.innerHTML = `
+        <div class="stage-number">${String(index + 1).padStart(2, "0")}</div>
+        <div>
+          <h3>${stage.title}</h3>
+          <p>${stage.body}</p>
+          <div class="stage-meta">
+            <span class="tag">필요: ${stage.input}</span>
+            <span class="tag">산출: ${stage.output}</span>
+            <span class="tag ${stage.mode.includes("자동") ? "auto" : "manual"}">${stage.mode}</span>
+          </div>
+        </div>
+        <div class="dev-status">
+          <strong>${stage.status}</strong>
+          <div class="meter" aria-label="${stage.title} 개발 진행률 ${stage.progress}%">
+            <span style="width: ${stage.progress}%"></span>
+          </div>
+        </div>
+      `;
+      workflowList.appendChild(item);
+    });
+
+    const flowTrack = document.getElementById("flow-track");
+
+    const selectedStepTitle = document.getElementById("selected-step-title");
+    const selectedStepAction = document.getElementById("selected-step-action");
+    const selectedStepInput = document.getElementById("selected-step-input");
+    const selectedStepDev = document.getElementById("selected-step-dev");
+    const selectedStepStatus = document.getElementById("selected-step-status");
+
+    function renderSelectedStep(index) {
+      const step = pipeline[index];
+      selectedStepTitle.textContent = `${String(index + 1).padStart(2, "0")}. ${step.label}`;
+      selectedStepAction.textContent = step.action;
+      selectedStepInput.textContent = step.input;
+      selectedStepDev.textContent = step.dev;
+      selectedStepStatus.textContent = step.status;
+    }
+
+    pipeline.forEach((stepData, index) => {
+      const step = document.createElement("button");
+      step.type = "button";
+      step.className = "flow-step";
+      step.setAttribute("aria-pressed", String(index === currentFlowIndex));
+      if (index < currentFlowIndex) {
+        step.classList.add("done");
+      }
+      if (index === currentFlowIndex) {
+        step.classList.add("current");
+        step.setAttribute("aria-current", "step");
+      }
+      step.innerHTML = `
+        <span class="flow-index">${String(index + 1).padStart(2, "0")}</span>
+        <span class="flow-label">${stepData.label}</span>
+      `;
+      step.addEventListener("click", () => {
+        document.querySelectorAll(".flow-step").forEach((item) => item.setAttribute("aria-pressed", "false"));
+        step.setAttribute("aria-pressed", "true");
+        renderSelectedStep(index);
+      });
+      flowTrack.appendChild(step);
+    });
+
+    renderSelectedStep(currentFlowIndex);
+
+    const subtopicsByMainTopic = {
+      history: [
+        ["조선시대", "제도, 통신, 도시, 기술, 전쟁"],
+        ["고려/삼국", "외교, 불교, 전쟁, 해상 교역"],
+        ["중세 유럽", "성곽, 기사, 교역, 종교 권력"],
+        ["근현대", "산업, 전쟁, 국가, 도시 변화"]
+      ],
+      engineering: [
+        ["건축공학", "하중, 구조, 내진, 초고층"],
+        ["기계공학", "엔진, 기어, 열, 제조 공정"],
+        ["항공공학", "양력, 항력, 터빈, 비행 제어"],
+        ["유체역학", "압력, 와류, 파도, 유량"]
+      ],
+      science: [
+        ["우주", "궤도, 중력, 별, 탐사선"],
+        ["생물", "진화, 세포, 감각, 생태계"],
+        ["화학", "반응, 촉매, 재료, 에너지"],
+        ["지구과학", "화산, 지진, 해류, 기후"]
+      ]
+    };
+
+    const subtopicGrid = document.getElementById("subtopic-grid");
+    const subtopicPanel = document.getElementById("subtopic-panel");
+    const subtopicPanelHint = document.getElementById("subtopic-panel-hint");
+    const topicResults = document.getElementById("topic-results");
+    const findTopicsButton = document.getElementById("find-topics-button");
+    const finderPanel = document.getElementById("finder-panel");
+    const topicCountInput = document.getElementById("topic-count");
+    const generateScriptButton = document.getElementById("generate-script-button");
+    const approveScriptButton = document.getElementById("approve-script-button");
+    const scriptTopicSummary = document.getElementById("script-topic-summary");
+    const factCheckSummary = document.getElementById("fact-check-summary");
+    const storyCoreSummary = document.getElementById("story-core-summary");
+    const productionScriptOutput = document.getElementById("production-script-output");
+    const ttsScriptOutput = document.getElementById("tts-script-output");
+    const scriptOutputTitle = document.getElementById("script-output-title");
+    const voicePresetsOutput = document.getElementById("voice-presets");
+    const ttsEnvironmentOutput = document.getElementById("tts-environment");
+    const ttsTopicSummary = document.getElementById("tts-topic-summary");
+    const ttsRunSummary = document.getElementById("tts-run-summary");
+    const ttsSegmentsOutput = document.getElementById("tts-segments-output");
+    const prepareTtsButton = document.getElementById("prepare-tts-button");
+    const refreshTtsButton = document.getElementById("refresh-tts-button");
+    const addVoiceButton = document.getElementById("add-voice-button");
+    let selectedMainTopic = null;
+    let selectedSubtopic = null;
+    let selectedTopicDetail = null;
+    let selectedVoicePresetId = null;
+    let voicePresets = [];
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function renderSimpleList(items, emptyMessage) {
+      if (!items?.length) {
+        return `<p>${escapeHtml(emptyMessage)}</p>`;
+      }
+      return `<ul>${items.map((item) => {
+        if (typeof item === "string") return `<li>${escapeHtml(item)}</li>`;
+        const text = item.item || item.source || item.issue || item.needed || JSON.stringify(item);
+        const detail = [item.issue, item.needed, item.source, item.reliability, item.usedFor].filter(Boolean).join(" / ");
+        return `<li>${escapeHtml(text)}${detail ? `<br><span>${escapeHtml(detail)}</span>` : ""}</li>`;
+      }).join("")}</ul>`;
+    }
+
+    function formatSeconds(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number) || number <= 0) return "-";
+      return `${number.toFixed(1)}초`;
+    }
+
+    function renderEnvironmentStatus(environment) {
+      if (!environment) {
+        ttsEnvironmentOutput.innerHTML = `<div class="env-item"><strong>확인 전</strong><span>상태 새로고침을 누르면 표시됩니다.</span></div>`;
+        return;
+      }
+      const items = [
+        ["GPU", environment.gpu?.available ? "준비됨" : "미확인", environment.gpu?.detail || "nvidia-smi를 찾지 못했습니다."],
+        ["ffmpeg", environment.ffmpeg ? "준비됨" : "미설치", environment.ffmpeg ? "오디오 병합 가능" : "로컬 TTS 후 병합에 필요"],
+        ["ffprobe", environment.ffprobe ? "준비됨" : "미설치", environment.ffprobe ? "실제 길이 측정 가능" : "실제 길이 자동 측정에 필요"],
+        ["Docker", environment.docker ? "준비됨" : "미설치", environment.docker ? "컨테이너 설치 가능" : "일부 TTS 설치 경로에 필요"]
+      ];
+      ttsEnvironmentOutput.innerHTML = items.map(([name, status, detail]) => `
+        <div class="env-item">
+          <strong>${escapeHtml(name)} · ${escapeHtml(status)}</strong>
+          <span>${escapeHtml(detail)}</span>
+        </div>
+      `).join("");
+    }
+
+    function renderVoicePresets(presets) {
+      voicePresets = presets || [];
+      if (!voicePresets.length) {
+        voicePresetsOutput.innerHTML = `<div class="script-empty">등록된 목소리 프리셋이 없습니다.</div>`;
+        selectedVoicePresetId = null;
+        return;
+      }
+      selectedVoicePresetId = selectedVoicePresetId || voicePresets.find((preset) => preset.isDefault)?.id || voicePresets[0].id;
+      voicePresetsOutput.innerHTML = voicePresets.map((preset) => `
+        <button type="button" class="voice-preset-row" data-voice-id="${preset.id}" aria-pressed="${String(preset.id === selectedVoicePresetId)}">
+          <span>
+            <strong>${escapeHtml(preset.name)} ${preset.isDefault ? "· 기본" : ""}</strong>
+            <span>${escapeHtml(preset.engine)} · ${escapeHtml(preset.language)} · ${escapeHtml(preset.mode)}</span>
+            <code>${escapeHtml(preset.styleInstruction)}</code>
+          </span>
+          <span class="status-badge ${preset.mode === "reference" ? "hold" : "pass"}">${preset.mode === "reference" ? "레퍼런스" : "프리셋"}</span>
+        </button>
+      `).join("");
+    }
+
+    function renderTtsRun(run) {
+      const topic = selectedTopicDetail?.topic;
+      const script = selectedTopicDetail?.script;
+      prepareTtsButton.disabled = !topic || !script;
+
+      if (!topic) {
+        ttsTopicSummary.textContent = "대본 작업에서 주제를 선택하면 이곳에 TTS 계획이 표시됩니다.";
+        ttsRunSummary.innerHTML = `<span class="status-badge hold">준비 전</span>`;
+        ttsSegmentsOutput.className = "script-empty";
+        ttsSegmentsOutput.textContent = "아직 준비된 TTS 세그먼트가 없습니다.";
+        return;
+      }
+
+      ttsTopicSummary.innerHTML = `<strong>${escapeHtml(topic.title)}</strong><br>${script ? "대본 있음" : "대본 없음"} · ${escapeHtml(topic.sourceTitle)}`;
+
+      if (!run) {
+        ttsRunSummary.innerHTML = `<span class="status-badge hold">준비 전</span>`;
+        ttsSegmentsOutput.className = "script-empty";
+        ttsSegmentsOutput.textContent = script ? "TTS 세그먼트 준비를 누르면 장면별 대사가 나뉩니다." : "먼저 대본을 생성해야 합니다.";
+        return;
+      }
+
+      const actualTotal = run.totalDurationSec ? formatSeconds(run.totalDurationSec) : "아직 없음";
+      ttsRunSummary.innerHTML = `
+        <span class="status-badge pass">${escapeHtml(run.status)}</span>
+        <span class="status-badge hold">${escapeHtml(run.engine)}</span>
+        <span class="status-badge hold">예상 ${formatSeconds(run.estimatedTotalDurationSec)}</span>
+        <span class="status-badge hold">실측 ${escapeHtml(actualTotal)}</span>
+      `;
+
+      ttsSegmentsOutput.className = "";
+      ttsSegmentsOutput.innerHTML = `
+        <table class="tts-table">
+          <thead>
+            <tr>
+              <th style="width: 62px;">ID</th>
+              <th style="width: 104px;">계획</th>
+              <th>대사</th>
+              <th style="width: 86px;">예상</th>
+              <th style="width: 86px;">실측</th>
+              <th style="width: 88px;">상태</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${run.segments.map((segment) => `
+              <tr>
+                <td>${escapeHtml(String(segment.segmentIndex).padStart(2, "0"))}</td>
+                <td>${escapeHtml(segment.plannedTime || segment.label)}</td>
+                <td class="segment-text">${escapeHtml(segment.text)}</td>
+                <td>${formatSeconds(segment.estimatedDurationSec)}</td>
+                <td>${formatSeconds(segment.durationSec)}</td>
+                <td><span class="status-badge hold">${escapeHtml(segment.status)}</span></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderTopicMessage(message) {
+      topicResults.innerHTML = `
+        <tr>
+          <td colspan="8">
+            <div class="topic-title-cell">
+              <strong>${message}</strong>
+              <span>메인 주제를 고르면 저장된 후보가 보이고, 세부 주제를 고르면 그 범위로 좁혀집니다.</span>
+            </div>
+          </td>
+        </tr>
+      `;
+    }
+
+    function renderTopicLoading(message, detail) {
+      topicResults.innerHTML = `
+        <tr>
+          <td colspan="8">
+            <div class="topic-title-cell">
+              <strong class="inline-loader">${message}</strong>
+              <span>${detail}</span>
+            </div>
+          </td>
+        </tr>
+      `;
+    }
+
+    function setButtonLoading(button, isLoading, loadingText) {
+      if (!button) return;
+      if (isLoading) {
+        button.dataset.idleText = button.textContent;
+        button.disabled = true;
+        button.classList.add("is-loading");
+        button.textContent = loadingText;
+        return;
+      }
+      button.disabled = false;
+      button.classList.remove("is-loading");
+      button.textContent = button.dataset.idleText || button.textContent;
+      delete button.dataset.idleText;
+    }
+
+    function setRowProcessing(row, isProcessing) {
+      if (!row) return;
+      row.classList.toggle("processing", isProcessing);
+      row.querySelectorAll("button[data-topic-id]").forEach((button) => {
+        button.disabled = isProcessing;
+      });
+    }
+
+    function statusBadge(status, lifecycleStatus) {
+      if (status === "checking") {
+        return `<span class="status-badge hold">검증 중</span>`;
+      }
+      if (lifecycleStatus === "fact_checking") {
+        return `<span class="status-badge hold">검증 대기</span>`;
+      }
+      if (lifecycleStatus === "script") {
+        return `<span class="status-badge hold">대본 단계</span>`;
+      }
+      if (lifecycleStatus === "produced") {
+        return `<span class="status-badge pass">제작됨</span>`;
+      }
+      if (status === "verified") {
+        return `<span class="status-badge pass">검증 통과</span>`;
+      }
+      if (status === "prechecked") {
+        return `<span class="status-badge pass">사전통과</span>`;
+      }
+      if (status === "reject" || status === "rejected") {
+        return `<span class="status-badge reject">폐기</span>`;
+      }
+      if (status === "hold") {
+        return `<span class="status-badge hold">보류</span>`;
+      }
+      return `<span class="status-badge hold">검증 전</span>`;
+    }
+
+    function factStatusBadge(status) {
+      if (status === "PASS") return `<span class="status-badge pass">PASS</span>`;
+      if (status === "REJECT") return `<span class="status-badge reject">REJECT</span>`;
+      if (status === "HOLD") return `<span class="status-badge hold">HOLD</span>`;
+      return `<span class="status-badge hold">검증 전</span>`;
+    }
+
+    function renderScriptDetail(detail) {
+      selectedTopicDetail = detail;
+      const topic = detail?.topic;
+      const factCheck = detail?.factCheck;
+      const script = detail?.script;
+
+      if (!topic) {
+        scriptTopicSummary.innerHTML = "쇼츠 주제 리스트에서 검증 또는 대본을 실행할 후보를 선택하세요.";
+        factCheckSummary.className = "script-empty";
+        factCheckSummary.innerHTML = "아직 검증 결과가 없습니다.";
+        storyCoreSummary.className = "script-empty";
+        storyCoreSummary.innerHTML = "PASS 후 대본을 생성하면 표시됩니다.";
+        productionScriptOutput.className = "script-empty";
+        productionScriptOutput.innerHTML = "아직 생성된 대본이 없습니다.";
+        ttsScriptOutput.textContent = "아직 생성된 TTS 텍스트가 없습니다.";
+        generateScriptButton.disabled = true;
+        approveScriptButton.disabled = true;
+        renderTtsRun(null);
+        return;
+      }
+
+      scriptTopicSummary.innerHTML = `<strong>${escapeHtml(topic.title)}</strong><br>${escapeHtml(topic.hook)}<br><span>${escapeHtml(topic.sourceTitle)} · ${escapeHtml(topic.sourceUrl)}</span>`;
+
+      if (!factCheck) {
+        factCheckSummary.className = "script-empty";
+        factCheckSummary.innerHTML = "아직 검증 결과가 없습니다. 후보 리스트에서 검증 실행을 먼저 누르세요.";
+        generateScriptButton.disabled = true;
+      } else {
+        factCheckSummary.className = "script-box";
+        factCheckSummary.innerHTML = `
+          <p>${factStatusBadge(factCheck.status)} <span>${escapeHtml(factCheck.attempt || 1)}차 검증 · 신뢰도 ${escapeHtml(factCheck.confidence)}%</span></p>
+          <p><strong>핵심 주장</strong><br>${escapeHtml(factCheck.coreClaim)}</p>
+          <p><strong>판정 이유</strong><br>${escapeHtml(factCheck.verdictReason)}</p>
+          <p><strong>다음 액션</strong><br>${escapeHtml(factCheck.nextAction)}</p>
+          <h4>보강 출처</h4>
+          ${renderSimpleList(factCheck.enrichmentSources?.map((source) => ({
+            item: source.title,
+            source: source.url,
+            reliability: `score ${source.score}`
+          })), "보강 출처 없이 1차에서 판정됐습니다.")}
+          <h4>확인된 사실</h4>
+          ${renderSimpleList(factCheck.verifiedFacts, "확인된 사실이 충분하지 않습니다.")}
+          <h4>미확인/충돌</h4>
+          ${renderSimpleList(factCheck.unresolved, "큰 미확인 항목이 없습니다.")}
+        `;
+        generateScriptButton.disabled = factCheck.status !== "PASS";
+      }
+
+      if (!script) {
+        storyCoreSummary.className = "script-empty";
+        storyCoreSummary.innerHTML = factCheck?.status === "PASS" ? "대본 생성 버튼을 누르면 핵심 구조가 표시됩니다." : "검증 PASS 후 표시됩니다.";
+        productionScriptOutput.className = "script-empty";
+        productionScriptOutput.innerHTML = "아직 생성된 대본이 없습니다.";
+        ttsScriptOutput.textContent = "아직 생성된 TTS 텍스트가 없습니다.";
+        scriptOutputTitle.textContent = "제작용 대본";
+        approveScriptButton.disabled = true;
+        generateScriptButton.textContent = "대본 생성";
+        renderTtsRun(null);
+        return;
+      }
+
+      storyCoreSummary.className = "script-box";
+      storyCoreSummary.innerHTML = `
+        <p><strong>핵심 질문</strong><br>${escapeHtml(script.coreQuestion)}</p>
+        <p><strong>핵심 갈등</strong><br>${escapeHtml(script.coreConflict)}</p>
+        <p><strong>보이는 흐름</strong><br>${escapeHtml(script.visibleFlow)}</p>
+        <p><strong>전환점</strong><br>${escapeHtml(script.turningPoint)}</p>
+        <h4>주의점</h4>
+        ${renderSimpleList(script.notes, "추가 주의점이 없습니다.")}
+      `;
+      productionScriptOutput.className = "script-box";
+      productionScriptOutput.innerHTML = script.productionScript.map((row) => `
+        <div class="script-row">
+          <div class="script-time">${escapeHtml(row.time)}</div>
+          <div class="script-text">
+            <strong>${escapeHtml(row.beat)}</strong>
+            <span>${escapeHtml(row.narration)}</span>
+            <span>${escapeHtml(row.visualDirection)}</span>
+          </div>
+        </div>
+      `).join("");
+      ttsScriptOutput.textContent = script.ttsText;
+      scriptOutputTitle.textContent = `제작용 대본 · ${escapeHtml(script.status)}`;
+      generateScriptButton.disabled = false;
+      generateScriptButton.textContent = "대본 재생성";
+      approveScriptButton.disabled = false;
+      loadTtsPlan().catch((error) => {
+        ttsSegmentsOutput.className = "script-empty";
+        ttsSegmentsOutput.textContent = error.message;
+      });
+    }
+
+    function renderTopicRows(candidates) {
+      if (!candidates.length) {
+        renderTopicMessage("아직 생성된 후보 주제가 없습니다.");
+        return;
+      }
+      topicResults.innerHTML = candidates.map((candidate, index) => `
+        ${(() => {
+          const checkLabel = candidate.hasFactCheck
+            ? `검증 완료${candidate.factAttempt ? ` ${candidate.factAttempt}차` : ""}`
+            : "검증 실행";
+          const checkDisabled = candidate.hasFactCheck ? "disabled" : "";
+          return `
+        <tr class="${index === 0 ? "selected" : ""}">
+          <td>
+            <div class="topic-title-cell">
+              <strong>${candidate.title}</strong>
+              <span>${candidate.hook}</span>
+            </div>
+          </td>
+          <td>${statusBadge(candidate.status, candidate.lifecycleStatus)}</td>
+          <td class="score-cell">${candidate.scores.verification}</td>
+          <td class="score-cell">${candidate.scores.visual}</td>
+          <td class="score-cell">${candidate.scores.novelty}</td>
+          <td class="score-cell">${candidate.scores.lengthFit}</td>
+          <td class="score-cell">${candidate.scores.distortionRisk}</td>
+          <td>
+            <div class="topic-actions">
+              <button type="button" class="small-action topic-script" data-topic-id="${candidate.dbId}">${candidate.hasScript ? "대본 보기" : "대본 생성"}</button>
+              <button type="button" class="small-action topic-check" data-topic-id="${candidate.dbId}" ${checkDisabled}>${checkLabel}</button>
+              <button type="button" class="small-action topic-drop" data-topic-id="${candidate.dbId}">버림</button>
+            </div>
+          </td>
+        </tr>
+          `;
+        })()}
+      `).join("");
+    }
+
+    async function getTopicDetail(id) {
+      const response = await fetch(`/api/topics/detail?id=${encodeURIComponent(id)}`);
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "주제 상세를 불러오지 못했습니다.");
+      }
+      return payload;
+    }
+
+    async function loadLatestScriptDetail() {
+      const response = await fetch("/api/topics/latest-script");
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "최근 대본을 불러오지 못했습니다.");
+      }
+      if (payload.topic && payload.script) {
+        selectedMainTopic = payload.topic.mainTopic;
+        selectedSubtopic = payload.topic.subtopic;
+        document.querySelectorAll(".main-topic").forEach((item) => {
+          item.setAttribute("aria-pressed", String(item.dataset.topic === selectedMainTopic));
+        });
+        renderSubtopics(selectedMainTopic);
+        subtopicGrid.querySelectorAll(".picker-row").forEach((item) => {
+          const title = item.querySelector("strong")?.textContent;
+          item.setAttribute("aria-pressed", String(title === selectedSubtopic));
+        });
+        finderPanel.hidden = false;
+        renderScriptDetail(payload);
+        await loadTopics();
+      }
+    }
+
+    async function runTopicFactCheck(id) {
+      const response = await fetch("/api/topics/fact-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "검증에 실패했습니다.");
+      }
+      return payload;
+    }
+
+    async function runTopicScript(id) {
+      const response = await fetch("/api/topics/script", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "대본 생성에 실패했습니다.");
+      }
+      return payload;
+    }
+
+    async function updateTopicLifecycle(id, lifecycleStatus) {
+      const response = await fetch("/api/topics/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, lifecycleStatus })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "상태 변경에 실패했습니다.");
+      }
+      return payload.topic;
+    }
+
+    async function loadVoicePresets() {
+      const response = await fetch("/api/voice-presets");
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "목소리 프리셋을 불러오지 못했습니다.");
+      }
+      renderVoicePresets(payload.presets || []);
+    }
+
+    async function loadTtsStatus() {
+      const response = await fetch("/api/tts/status");
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "TTS 상태를 확인하지 못했습니다.");
+      }
+      renderEnvironmentStatus(payload);
+      return payload;
+    }
+
+    async function loadTtsPlan() {
+      const topicId = selectedTopicDetail?.topic?.id;
+      if (!topicId) {
+        renderTtsRun(null);
+        return;
+      }
+
+      const response = await fetch(`/api/tts/plan?topicId=${encodeURIComponent(topicId)}`);
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "TTS 계획을 불러오지 못했습니다.");
+      }
+      renderEnvironmentStatus(payload.environment);
+      renderVoicePresets(payload.presets || voicePresets);
+      renderTtsRun(payload.run);
+    }
+
+    async function prepareTtsSegments() {
+      const topicId = selectedTopicDetail?.topic?.id;
+      if (!topicId) return;
+
+      const response = await fetch("/api/tts/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topicId,
+          voicePresetId: selectedVoicePresetId
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "TTS 세그먼트 준비에 실패했습니다.");
+      }
+      renderEnvironmentStatus(payload.environment);
+      renderTtsRun(payload.run);
+    }
+
+    async function loadTopics() {
+      if (!selectedMainTopic) {
+        renderTopicMessage("메인 주제를 선택하세요.");
+        return;
+      }
+
+      const params = new URLSearchParams({ mainTopic: selectedMainTopic });
+      if (selectedSubtopic) {
+        params.set("subtopic", selectedSubtopic);
+      }
+
+      try {
+        renderTopicLoading("후보 불러오는 중...", "SQLite에 저장된 후보 목록을 읽고 있습니다.");
+        const response = await fetch(`/api/topics?${params.toString()}`);
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "후보를 불러오지 못했습니다.");
+        }
+        renderTopicRows(payload.candidates || []);
+      } catch (error) {
+        renderTopicMessage(error.message);
+      }
+    }
+
+    function renderSubtopics(topicKey) {
+      const selectedMainTopic = document.querySelector(`.main-topic[data-topic="${topicKey}"] strong`).textContent;
+      subtopicPanel.hidden = false;
+      subtopicPanelHint.textContent = `${selectedMainTopic} 세부 주제`;
+      subtopicGrid.innerHTML = "";
+      subtopicsByMainTopic[topicKey].forEach(([title, description], index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "picker-row";
+        button.setAttribute("aria-pressed", "false");
+        button.innerHTML = `<span><strong>${title}</strong><span>${description}</span></span><span class="row-mark">선택</span>`;
+        button.addEventListener("click", () => {
+          subtopicGrid.querySelectorAll(".picker-row").forEach((item) => item.setAttribute("aria-pressed", "false"));
+          button.setAttribute("aria-pressed", "true");
+          selectedSubtopic = title;
+          finderPanel.hidden = false;
+          loadTopics();
+        });
+        subtopicGrid.appendChild(button);
+      });
+      const addButton = document.createElement("button");
+      addButton.type = "button";
+      addButton.className = "picker-row add-row";
+      addButton.setAttribute("aria-pressed", "false");
+      addButton.innerHTML = `<span><strong>+ 세부 주제 추가</strong><span>필요한 카테고리를 나중에 확장</span></span><span class="row-mark">추가</span>`;
+      subtopicGrid.appendChild(addButton);
+    }
+
+    document.querySelectorAll(".main-topic").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".main-topic").forEach((item) => item.setAttribute("aria-pressed", "false"));
+        button.setAttribute("aria-pressed", "true");
+        selectedMainTopic = button.dataset.topic;
+        selectedSubtopic = null;
+        finderPanel.hidden = true;
+        renderSubtopics(selectedMainTopic);
+        loadTopics();
+      });
+    });
+
+    document.querySelectorAll(".topic-count-preset").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".topic-count-preset").forEach((item) => item.classList.remove("primary"));
+        button.classList.add("primary");
+        topicCountInput.value = button.dataset.count;
+      });
+    });
+
+    findTopicsButton.addEventListener("click", async () => {
+      if (!selectedMainTopic || !selectedSubtopic) {
+        renderTopicMessage("메인 주제와 세부 주제를 먼저 선택해야 합니다.");
+        return;
+      }
+
+      setButtonLoading(findTopicsButton, true, "검색/필터링 중");
+      renderTopicLoading("공개 자료 검색 중...", "여러 결과를 가져온 뒤 중복, 드랍, 너무 넓은 항목을 걸러 최종 후보만 저장합니다.");
+
+      try {
+        const response = await fetch("/api/topics/find", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mainTopic: selectedMainTopic,
+            subtopic: selectedSubtopic,
+            count: Number(topicCountInput.value || 10)
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "주제 찾기에 실패했습니다.");
+        }
+        await loadTopics();
+      } catch (error) {
+        topicResults.innerHTML = `
+          <tr>
+            <td colspan="8">
+              <div class="topic-title-cell">
+                <strong>${error.message}</strong>
+                <span>이 기능은 로컬 서버로 열어야 동작합니다. 터미널에서 npm start 실행 후 http://localhost:5174 로 접속하세요.</span>
+              </div>
+            </td>
+          </tr>
+        `;
+      } finally {
+        setButtonLoading(findTopicsButton, false);
+      }
+    });
+
+    voicePresetsOutput.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-voice-id]");
+      if (!button) return;
+      selectedVoicePresetId = Number(button.dataset.voiceId);
+      voicePresetsOutput.querySelectorAll(".voice-preset-row").forEach((item) => {
+        item.setAttribute("aria-pressed", String(Number(item.dataset.voiceId) === selectedVoicePresetId));
+      });
+    });
+
+    refreshTtsButton.addEventListener("click", async () => {
+      setButtonLoading(refreshTtsButton, true, "확인 중");
+      try {
+        await loadVoicePresets();
+        await loadTtsStatus();
+        await loadTtsPlan();
+      } catch (error) {
+        ttsEnvironmentOutput.innerHTML = `<div class="env-item"><strong>오류</strong><span>${escapeHtml(error.message)}</span></div>`;
+      } finally {
+        setButtonLoading(refreshTtsButton, false);
+      }
+    });
+
+    prepareTtsButton.addEventListener("click", async () => {
+      setButtonLoading(prepareTtsButton, true, "세그먼트 준비 중");
+      ttsSegmentsOutput.className = "script-empty";
+      ttsSegmentsOutput.innerHTML = `<strong class="inline-loader">대본을 장면별 TTS 단위로 나누는 중...</strong>`;
+      try {
+        await prepareTtsSegments();
+      } catch (error) {
+        ttsSegmentsOutput.className = "script-empty";
+        ttsSegmentsOutput.textContent = error.message;
+      } finally {
+        setButtonLoading(prepareTtsButton, false);
+      }
+    });
+
+    addVoiceButton.addEventListener("click", async () => {
+      const nextIndex = voicePresets.length + 1;
+      const name = window.prompt("목소리 프리셋 이름", `추가 목소리 ${nextIndex}`);
+      if (!name) return;
+      const styleInstruction = window.prompt(
+        "Control Instruction",
+        "A calm Korean documentary narrator, clear pronunciation, restrained emotion, cinematic tension"
+      );
+      if (!styleInstruction) return;
+
+      setButtonLoading(addVoiceButton, true, "추가 중");
+      try {
+        const response = await fetch("/api/voice-presets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            engine: "VoxCPM2",
+            mode: "preset",
+            language: "ko",
+            styleInstruction
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "목소리 추가에 실패했습니다.");
+        }
+        selectedVoicePresetId = payload.preset.id;
+        await loadVoicePresets();
+      } catch (error) {
+        voicePresetsOutput.innerHTML = `<div class="script-empty">${escapeHtml(error.message)}</div>`;
+      } finally {
+        setButtonLoading(addVoiceButton, false);
+      }
+    });
+
+    renderTopicMessage("아직 생성된 후보 주제가 없습니다.");
+    renderScriptDetail(null);
+    loadVoicePresets().catch((error) => {
+      voicePresetsOutput.innerHTML = `<div class="script-empty">${escapeHtml(error.message)}</div>`;
+    });
+    loadTtsStatus().catch((error) => {
+      ttsEnvironmentOutput.innerHTML = `<div class="env-item"><strong>오류</strong><span>${escapeHtml(error.message)}</span></div>`;
+    });
+    loadLatestScriptDetail().catch(() => {});
+
+    topicResults.addEventListener("click", async (event) => {
+      const button = event.target.closest("button[data-topic-id]");
+      if (!button) return;
+
+      const id = Number(button.dataset.topicId);
+      const row = button.closest("tr");
+      try {
+        if (button.classList.contains("topic-drop")) {
+          setRowProcessing(row, true);
+          setButtonLoading(button, true, "버리는 중");
+          await updateTopicLifecycle(id, "dropped");
+          row.remove();
+          if (!topicResults.querySelector("tr")) {
+            renderTopicMessage("표시할 후보가 없습니다.");
+          }
+          return;
+        }
+        if (button.classList.contains("topic-script")) {
+          setRowProcessing(row, true);
+          setButtonLoading(button, true, button.textContent.includes("보기") ? "대본 여는 중" : "대본 생성 중");
+          document.querySelector('.studio-tab[data-studio-pane="script"]').click();
+          const currentDetail = await getTopicDetail(id);
+          if (currentDetail.script) {
+            renderScriptDetail(currentDetail);
+          } else {
+            renderScriptDetail(currentDetail);
+            const generated = await runTopicScript(id);
+            renderScriptDetail(generated);
+          }
+          document.querySelector('.studio-tab[data-studio-pane="script"]').click();
+          await loadTopics();
+          return;
+        }
+        if (button.classList.contains("topic-check")) {
+          setRowProcessing(row, true);
+          setButtonLoading(button, true, "검증 실행 중");
+          document.querySelector('.studio-tab[data-studio-pane="script"]').click();
+          renderScriptDetail(await getTopicDetail(id));
+          const detail = await runTopicFactCheck(id);
+          renderScriptDetail(detail);
+          await loadTopics();
+        }
+      } catch (error) {
+        setRowProcessing(row, false);
+        setButtonLoading(button, false);
+        renderTopicMessage(error.message);
+      }
+    });
+
+    generateScriptButton.addEventListener("click", async () => {
+      const topicId = selectedTopicDetail?.topic?.id;
+      if (!topicId) return;
+
+      setButtonLoading(generateScriptButton, true, "대본 생성 중");
+      try {
+        const detail = await runTopicScript(topicId);
+        renderScriptDetail(detail);
+        await loadTopics();
+      } catch (error) {
+        productionScriptOutput.className = "script-empty";
+        productionScriptOutput.textContent = error.message;
+      } finally {
+        setButtonLoading(generateScriptButton, false);
+        renderScriptDetail(selectedTopicDetail);
+      }
+    });
+
+    approveScriptButton.addEventListener("click", () => {
+      approveScriptButton.textContent = "승인 저장은 다음 단계";
+      setTimeout(() => {
+        approveScriptButton.textContent = "대본 승인";
+      }, 1600);
+    });
+
+    const studioTabs = document.querySelectorAll(".studio-tab");
+    const studioPanes = document.querySelectorAll(".studio-pane-view");
+
+    studioTabs.forEach((button) => {
+      button.addEventListener("click", () => {
+        const target = button.dataset.studioPane;
+        studioTabs.forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+        studioPanes.forEach((pane) => {
+          pane.classList.toggle("active", pane.id === `studio-pane-${target}`);
+        });
+        if (target === "tts") {
+          loadVoicePresets()
+            .then(loadTtsStatus)
+            .then(loadTtsPlan)
+            .catch((error) => {
+              ttsSegmentsOutput.className = "script-empty";
+              ttsSegmentsOutput.textContent = error.message;
+            });
+        }
+      });
+    });
+
+    const buttons = document.querySelectorAll(".nav-button");
+    const views = {
+      workflow: document.getElementById("workflow-view"),
+      studio: document.getElementById("studio-view"),
+      roadmap: document.getElementById("roadmap-view")
+    };
+
+    buttons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const target = button.dataset.view;
+        buttons.forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+        Object.entries(views).forEach(([key, view]) => {
+          view.classList.toggle("active", key === target);
+        });
+      });
+    });
+  </script>
+</body>
+</html>

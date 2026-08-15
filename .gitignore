@@ -1,0 +1,13 @@
+node_modules/
+
+data/
+projects/
+
+.env
+.env.*
+
+*.log
+*.tmp
+
+Thumbs.db
+Desktop.ini

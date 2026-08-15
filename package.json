@@ -1,0 +1,14 @@
+{
+  "name": "cinematic-shorts-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "codex:doctor": "set \"CODEX_HOME=C:\\Users\\com\\.codex\" && codex doctor",
+    "codex:test": "set \"CODEX_HOME=C:\\Users\\com\\.codex\" && codex exec -C . --sandbox read-only --skip-git-repo-check --ephemeral \"Reply with OK only.\""
+  },
+  "dependencies": {
+    "@openai/codex": "^0.147.0"
+  }
+}
