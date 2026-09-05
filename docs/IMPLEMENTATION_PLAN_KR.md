@@ -1,6 +1,6 @@
 # 구현 마일스톤
 
-> 2026-09-04 이후 자동화 작업의 실패 원인, 현재 상태와 GPT-6 인계 우선순위는 `docs/GPT6_AUTOMATION_HANDOFF_KR.md`를 먼저 확인한다. 이 문서의 체크 표시는 실제 production canary 완주를 의미하지 않는다.
+> 최신 백업·실측 감사·공식 자료 재조사와 재구축 계획은 `docs/REBUILD_PLAN_2026-09-05_KR.md`를 먼저 확인한다. 재구축은 아직 시작하지 않았다. 이전 실패 원인과 인계 기록은 `docs/GPT6_AUTOMATION_HANDOFF_KR.md`에 보존한다. 아래 과거 마일스톤의 체크 표시는 실제 production canary 완주를 의미하지 않는다.
 
 기준일: 2026-08-29
 
