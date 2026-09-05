@@ -1,0 +1,21 @@
+{
+  "caseKey": "engineering-hoover-dam-cooling",
+  "label": "후버댐 블록 시공과 냉각",
+  "domainKey": "engineering",
+  "mechanismType": "mass_concrete_heat_control",
+  "topicSelector": { "titleIncludes": "후버댐" },
+  "requiredStages": ["fact_check", "production_brief", "script", "shotlist", "clean_sample", "info_sample", "video_sample"],
+  "expectations": {
+    "minimumSupportedClaims": 3,
+    "qualityPolicy": "convergence_v2",
+    "forbiddenPatterns": ["기둥처럼 떠 있는 블록", "냉각관과 구조 철근 혼동", "열 흐름 방향 반전"],
+    "assertions": {
+      "expectedStage": "production_brief",
+      "expectedVerdict": "hold",
+      "requiredIssueCodes": ["needs_reference", "occluded_element_required"],
+      "minimumVisualReferences": 2,
+      "allowedReferenceTypes": ["official_photo", "construction_photo", "official_diagram", "official_section"],
+      "requireClaimEvidenceStateLinks": true
+    }
+  }
+}

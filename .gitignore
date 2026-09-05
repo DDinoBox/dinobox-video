@@ -1,7 +1,21 @@
 node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+tmp/
 
 data/
 projects/
+tools/downloads/
+tools/ffmpeg/
+tools/comfyui-h3/
+tools/comfyui-h3-install-audit/
+tools/minimax-h3-installer/
+tools/openshot/
+tools/python38/
+assets/fonts/downloads/
+assets/fonts/pretendard/public/
+assets/fonts/pretendard/web/
 
 .env
 .env.*

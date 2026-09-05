@@ -1,0 +1,143 @@
+{
+  "externalKey": "production-canary:nasa-jwst-sunshield:v1",
+  "runLane": "production_canary",
+  "mainTopic": "engineering",
+  "subtopic": "space systems",
+  "title": "제임스 웹 우주망원경의 5층 차양막 전개",
+  "hook": "접힌 차양막은 우주에서 어떤 순서로 펼쳐질까?",
+  "sourceTitle": "NASA Webb sunshield deployment",
+  "sourceUrl": "https://science.nasa.gov/mission/webb/deployment/",
+  "scope": "접힌 상태, 전개 순서, 지상에서 확인된 전개 완료 상태만 다룬다.",
+  "hiddenMechanismExclusions": ["내부 모터", "래치", "정밀 장력", "열성능"],
+  "productionRequirements": {
+    "minimumVisualStates": 7,
+    "targetVisualStateRange": [7, 7],
+    "minimumRequiredInfoOverlays": 2
+  },
+  "factSources": [
+    { "title": "NASA Webb deployment", "url": "https://science.nasa.gov/mission/webb/deployment/" },
+    { "title": "NASA Webb's 5-Layer Sunshield", "url": "https://science.nasa.gov/asset/webb/webbs-5-layer-sunshield/" }
+  ],
+  "license": {
+    "url": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+    "note": "NASA Images and Media usage guidance"
+  },
+  "officialVisualReferences": [
+    {
+      "id": "JWST-ARIANE-5-FAIRING-PACKED",
+      "stateHint": "folded_launch_configuration_inside_ariane_5_fairing",
+      "referenceType": "official_section",
+      "sourceUrl": "https://science.nasa.gov/mission/webb/deployment/",
+      "mediaUrl": "https://assets.science.nasa.gov/dynamicimage/assets/science/missions/webb/engineering/ariane4.jpg?w=1024&h=3468&fit=clip&crop=faces%2Cfocalpoint",
+      "description": "NASA 공식 페어링 단면 이미지에서 Ariane 5 페어링 안에 수납된 Webb의 접힌 발사 구성",
+      "metadata": { "state": "folded_launch_configuration_inside_ariane_5_fairing", "evidenceRole": "claim_required_state", "sourceKind": "official_static_nasa_fairing_section", "requiredForClaim": "C01", "productionVisualStateId": "VS01_FOLDED_LAUNCH_CONFIGURATION", "productionVisibleElements": ["Ariane 5 페어링 내부의 Webb", "접힌 차양막 패키지"] },
+      "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "licenseNote": "NASA Images and Media usage guidance"
+    },
+    {
+      "id": "JWST-DIAGRAM-01-FOLDED",
+      "stateHint": "folded_configuration",
+      "referenceType": "official_diagram",
+      "sourceUrl": "https://science.nasa.gov/mission/webb/deployment/",
+      "mediaUrl": "https://assets.science.nasa.gov/dynamicimage/assets/science/missions/webb/outreach/WebbDeployment10Step-4kx2k.jpg?w=4096&h=2048&fit=clip&crop=faces%2Cfocalpoint",
+      "description": "NASA Webb 전개 도식의 접힌 구성 패널; VS01의 비제작 보조 증거로만 보존한다.",
+      "panelCrop": [0, 0, 0.2, 0.5],
+      "metadata": { "state": "folded_configuration", "evidenceRole": "supplementary_non_production_claim_evidence", "sourceKind": "official_multi_panel_diagram", "requiredForClaim": "C01" },
+      "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "licenseNote": "NASA Images and Media usage guidance"
+    },
+    {
+      "id": "JWST-DIAGRAM-02-PALLET",
+      "stateHint": "pallet_deployed",
+      "referenceType": "official_diagram",
+      "sourceUrl": "https://science.nasa.gov/mission/webb/deployment/",
+      "mediaUrl": "https://assets.science.nasa.gov/dynamicimage/assets/science/missions/webb/outreach/WebbDeployment10Step-4kx2k.jpg?w=4096&h=2048&fit=clip&crop=faces%2Cfocalpoint",
+      "description": "NASA Webb 전개 도식의 팔레트 전개 패널",
+      "panelCrop": [0.2, 0, 0.2, 0.5],
+      "metadata": { "state": "pallet_deployed", "evidenceRole": "state_panel", "sourceKind": "official_multi_panel_diagram", "productionVisualStateId": "VS02_PALLETS_DEPLOYED", "productionVisibleElements": ["본체에서 펼쳐진 전후 팔레트", "아직 좁게 접힌 차양막"] },
+      "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "licenseNote": "NASA Images and Media usage guidance"
+    },
+    {
+      "id": "JWST-DIAGRAM-03-TOWER",
+      "stateHint": "tower_extended",
+      "referenceType": "official_diagram",
+      "sourceUrl": "https://science.nasa.gov/mission/webb/deployment/",
+      "mediaUrl": "https://assets.science.nasa.gov/dynamicimage/assets/science/missions/webb/outreach/WebbDeployment10Step-4kx2k.jpg?w=4096&h=2048&fit=clip&crop=faces%2Cfocalpoint",
+      "description": "NASA Webb 전개 도식의 타워 연장 패널",
+      "panelCrop": [0.4, 0, 0.2, 0.5],
+      "metadata": { "state": "tower_extended", "evidenceRole": "state_panel", "sourceKind": "official_multi_panel_diagram", "productionVisualStateId": "VS03_TOWER_EXTENDED", "productionVisibleElements": ["본체 위로 연장된 타워", "팔레트 사이에 남은 차양막 패키지"], "productionInfoSpec": { "type": "scale_limit", "labels": ["약 2m 연장"], "anchors": ["망원경-차양막 분리 타워"], "directionRule": "치수선·끝점·거리 비례선을 그리지 않는다.", "comparisonRule": "비교선을 사용하지 않는다.", "forbidden": ["두 타워 끝점을 잇는 치수선", "패널에서 측정한 것처럼 보이는 거리선"], "requiresOverlay": true, "geometryPolicy": "factual_badge", "evidenceSourceUrl": "https://science.nasa.gov/mission/webb/deployment/", "evidenceStatement": "NASA는 망원경과 차양막 사이의 분리 타워가 약 2미터 연장됐다고 설명한다." } },
+      "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "licenseNote": "NASA Images and Media usage guidance"
+    },
+    {
+      "id": "JWST-DIAGRAM-04-COVERS",
+      "stateHint": "sunshield_covers_released",
+      "referenceType": "official_diagram",
+      "sourceUrl": "https://science.nasa.gov/mission/webb/deployment/",
+      "mediaUrl": "https://assets.science.nasa.gov/dynamicimage/assets/science/missions/webb/outreach/WebbDeployment10Step-4kx2k.jpg?w=4096&h=2048&fit=clip&crop=faces%2Cfocalpoint",
+      "description": "NASA Webb 전개 도식의 차양막 덮개 해제 패널",
+      "panelCrop": [0.6, 0, 0.2, 0.5],
+      "metadata": { "state": "sunshield_covers_released", "evidenceRole": "state_panel", "sourceKind": "official_multi_panel_diagram", "productionVisualStateId": "VS04_COVERS_RELEASED", "productionVisibleElements": ["열린 차양막 덮개", "드러난 접힌 막 패키지"] },
+      "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "licenseNote": "NASA Images and Media usage guidance"
+    },
+    {
+      "id": "JWST-DEPLOYMENT-EXPLORER-PORT-MIDBOOM",
+      "stateHint": "port_then_starboard_midboom_sequence",
+      "referenceType": "official_diagram",
+      "sourceUrl": "https://webb.nasa.gov/content/webbLaunch/deploymentExplorer.html",
+      "mediaUrl": "https://webb.nasa.gov/content/webbLaunch/assets/images/deployment/1000pxWide/112.png",
+      "description": "NASA Webb Deployment Explorer의 좌현 미드붐 공식 정지 패널. VS05는 이 패널 뒤에 별도 우현 정지 패널을 두는 두 패널 설명 순서다.",
+      "metadata": { "state": "port_then_starboard_midboom_sequence", "evidenceRole": "claim_required_state", "sourceKind": "official_two_panel_static_explanatory_sequence", "requiredForClaim": "C02", "productionVisualStateId": "VS05_BOTH_MIDBOOMS_EXTENDED", "motionEvidence": "JWST-SUNSHIELD-VIDEO-REFERENCE", "panelSequence": [{ "order": 1, "side": "port", "referenceId": "JWST-DEPLOYMENT-EXPLORER-PORT-MIDBOOM", "sourceUrl": "https://webb.nasa.gov/content/webbLaunch/deploymentExplorer.html", "mediaUrl": "https://webb.nasa.gov/content/webbLaunch/assets/images/deployment/1000pxWide/112.png", "panelCrop": [0, 0, 1, 1] }, { "order": 2, "side": "starboard", "referenceId": "JWST-DEPLOYMENT-EXPLORER-STARBOARD-MIDBOOM", "sourceUrl": "https://webb.nasa.gov/content/webbLaunch/deploymentExplorer.html", "mediaUrl": "https://webb.nasa.gov/content/webbLaunch/assets/images/deployment/1000pxWide/113.png", "panelCrop": [0, 0, 1, 1] }], "sequencePresentation": "official_two_panel_explanatory_sequence", "continuityNote": "별도 NASA 공식 정지 패널을 좌현 다음 우현 순서로 나란히 보이는 설명이며, 패널 사이를 하나의 연속 물리 사진·움직임·합성 중간 상태로 주장하지 않는다.", "productionVisibleElements": ["좌현 미드붐의 NASA Deployment Explorer 정지 패널", "이어지는 우현 미드붐의 NASA Deployment Explorer 정지 패널"], "productionInfoSpec": { "type": "sequence", "labels": ["좌현 미드붐", "우현 미드붐"], "anchors": ["좌현 공식 정지 패널", "우현 공식 정지 패널"], "directionRule": "좌현 NASA 공식 정지 패널에서 우현 NASA 공식 정지 패널 순서만 표시하고, 한 프레임 안의 연속 이동처럼 그리지 않는다.", "comparisonRule": "비교선을 사용하지 않는다.", "forbidden": ["두 패널 사이의 합성 중간 상태", "한 장면에서 동시에 움직이는 양쪽 붐", "연속된 하나의 물리 사진 또는 동작이라는 주장"], "requiresOverlay": true } },
+      "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "licenseNote": "NASA Images and Media usage guidance"
+    },
+    {
+      "id": "JWST-DEPLOYMENT-EXPLORER-STARBOARD-MIDBOOM",
+      "stateHint": "starboard_midboom_static_explanatory_panel",
+      "referenceType": "official_diagram",
+      "sourceUrl": "https://webb.nasa.gov/content/webbLaunch/deploymentExplorer.html",
+      "mediaUrl": "https://webb.nasa.gov/content/webbLaunch/assets/images/deployment/1000pxWide/113.png",
+      "description": "NASA Webb Deployment Explorer의 우현 미드붐 공식 정지 패널; VS05의 두 번째 비연속 설명 패널로만 사용한다.",
+      "metadata": { "state": "starboard_midboom_static_explanatory_panel", "evidenceRole": "paired_non_production_panel", "sourceKind": "official_static_nasa_deployment_explorer", "pairedWith": "JWST-DEPLOYMENT-EXPLORER-PORT-MIDBOOM", "sequenceOrder": 2 },
+      "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "licenseNote": "NASA Images and Media usage guidance"
+    },
+    {
+      "id": "JWST-DIAGRAM-06-FIVE-LAYERS",
+      "stateHint": "five_layers_separated_complete_diagram",
+      "referenceType": "official_diagram",
+      "sourceUrl": "https://science.nasa.gov/mission/webb/deployment/",
+      "mediaUrl": "https://assets.science.nasa.gov/dynamicimage/assets/science/missions/webb/outreach/WebbDeployment10Step-4kx2k.jpg?w=4096&h=2048&fit=clip&crop=faces%2Cfocalpoint",
+      "description": "NASA Webb 전개 도식의 5층 차양막 분리 완료 패널",
+      "panelCrop": [0.8, 0.5, 0.2, 0.5],
+      "metadata": { "state": "five_layers_separated_complete_diagram", "evidenceRole": "state_panel", "sourceKind": "official_multi_panel_diagram", "productionVisualStateId": "VS06_FIVE_LAYERS_SEPARATED_COMPLETE_DIAGRAM", "productionVisibleElements": ["서로 구분되어 보이는 다섯 막 층", "전개 완료 차양막 외곽"] },
+      "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "licenseNote": "NASA Images and Media usage guidance"
+    },
+    {
+      "id": "JWST-SUNSHIELD-GROUND-TEST",
+      "stateHint": "deployed_five_layer_ground_test",
+      "referenceType": "official_photo",
+      "sourceUrl": "https://science.nasa.gov/asset/webb/webbs-5-layer-sunshield/",
+      "mediaUrl": "https://assets.science.nasa.gov/dynamicimage/assets/science/missions/webb/outreach/migrated/2014/STScI-01HVVJDRQXKQ7VFZKYBHV271WA.png?w=4928&h=3280&fit=clip&crop=faces%2Cfocalpoint",
+      "description": "NASA의 전개 완료 5층 차양막 지상 시험 사진",
+      "metadata": { "state": "deployed_five_layer_ground_test", "evidenceRole": "claim_required_state", "requiredForClaim": "C03", "productionVisualStateId": "VS07_FIVE_LAYER_GROUND_TEST_PHOTO", "productionVisibleElements": ["클린룸에 펼쳐진 실물 크기 차양막", "서로 간격이 보이는 다섯 막 층"], "productionInfoSpec": { "type": "location", "labels": ["실물 크기"], "anchors": ["클린룸에 펼쳐진 차양막"], "directionRule": "라벨을 클린룸에 펼쳐진 차양막 외곽으로 연결하고, 새 치수·간격·힘을 그리지 않는다.", "comparisonRule": "비교선을 사용하지 않는다.", "forbidden": ["추정 크기 수치", "새 치수선", "내부 케이블 경로"], "requiresOverlay": true, "geometryPolicy": "factual_badge", "evidenceSourceUrl": "https://science.nasa.gov/asset/webb/webbs-5-layer-sunshield/", "evidenceStatement": "NASA 공식 지상 시험 사진은 실물 크기 다섯 층 차양막 시험 유닛이 완전히 펼쳐지고 층 사이가 분리된 상태를 보여준다." } },
+      "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "licenseNote": "NASA Images and Media usage guidance"
+    },
+    {
+      "id": "JWST-SUNSHIELD-VIDEO-REFERENCE",
+      "stateHint": "sunshield_deployment_motion_reference",
+      "referenceType": "official_motion_reference",
+      "sourceUrl": "https://svs.gsfc.nasa.gov/13546",
+      "mediaUrl": "https://svs.gsfc.nasa.gov/vis/a010000/a013500/a013546/JWST_SShields_Deploy_ProRes_60fps.mp4",
+      "description": "NASA SVS sunshield deployment video; motion-only source reference, CLEAN still reference로 사용하지 않음",
+      "metadata": { "evidenceRole": "motion_reference" },
+      "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "licenseNote": "NASA Images and Media usage guidance",
+      "mediaKind": "video_reference_only"
+    }
+  ]
+}

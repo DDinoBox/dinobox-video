@@ -1,0 +1,62 @@
+{
+  "externalKey": "production-canary:usbr-glen-canyon-dam-jet-tubes:v1",
+  "runLane": "production_canary",
+  "mainTopic": "engineering",
+  "subtopic": "토목공학",
+  "title": "글렌 캐니언 댐 고유량 방류의 제트 튜브 4개",
+  "hook": "처음 두 개에서 네 개까지, 댐의 방류 모습은 어떻게 바뀌었을까?",
+  "sourceTitle": "USBR Glen Canyon Dam — high-flow release gallery",
+  "sourceUrl": "https://www.usbr.gov/uc/rm/crsp/gc/",
+  "scope": "2008년 3월 5일 고유량 실험의 공식 사진 세 장을 정확히 이 순서의 세 개 별도 시각 장면으로 다룬다: (1) 첫 두 jet tube가 열린 외부 모습, (2) 댐 상부에서 본 네 jet tube가 열린 모습, (3) 댐 전체와 네 jet tube가 열린 모습. (2)와 (3)은 같은 네 개 개방 상태를 서로 다른 공식 사진 시점으로만 제시하며, 하나로 병합하거나 사진 사이의 연속 개방 동작으로 연결하지 않는다. 사진에 보이지 않는 내부 흐름, 기어, 밸브, 단면 또는 작동 원인은 추론하지 않는다.",
+  "hiddenMechanismExclusions": ["internal flow", "internal water path", "gears", "gear", "valves", "valve", "cross-section", "cross section", "hidden mechanism", "내부 흐름", "기어", "밸브", "단면", "내부 구조", "작동 원인"],
+  "factSources": [
+    {
+      "title": "USBR Glen Canyon Dam — high-flow release gallery",
+      "url": "https://www.usbr.gov/uc/rm/crsp/gc/"
+    },
+    {
+      "title": "Denver Public Library Digital Collections — two jet tubes",
+      "url": "https://digital.denverlibrary.org/nodes/view/901224"
+    },
+    {
+      "title": "Denver Public Library Digital Collections — four open jet tubes",
+      "url": "https://digital.denverlibrary.org/nodes/view/908021"
+    }
+  ],
+  "license": {
+    "url": "https://www.usbr.gov/main/about/policies/",
+    "note": "U.S. Bureau of Reclamation official website policy reference"
+  },
+  "officialVisualReferences": [
+    {
+      "id": "USBR-GCD-JET-TUBES-TWO",
+      "stateHint": "first_two_jet_tubes_open",
+      "referenceType": "official_photo",
+      "sourceUrl": "https://www.usbr.gov/uc/rm/crsp/gc/",
+      "mediaUrl": "https://www.usbr.gov/uc/img/gallery/gcd/images/1.jpg",
+      "description": "USBR caption: Water rushing from first two jet tubes opened for high-flow experiment at Glen Canyon Dam — March 5, 2008",
+      "licenseUrl": "https://www.usbr.gov/main/about/policies/",
+      "licenseNote": "U.S. Bureau of Reclamation official website policy reference"
+    },
+    {
+      "id": "USBR-GCD-JET-TUBES-FOUR-TOP",
+      "stateHint": "all_four_jet_tubes_open_top_view",
+      "referenceType": "official_photo",
+      "sourceUrl": "https://www.usbr.gov/uc/rm/crsp/gc/",
+      "mediaUrl": "https://www.usbr.gov/uc/img/gallery/gcd/images/2.jpg",
+      "description": "USBR caption: View from top of dam of all four jet tubes open releasing water for high-flow experiment — March 5, 2008",
+      "licenseUrl": "https://www.usbr.gov/main/about/policies/",
+      "licenseNote": "U.S. Bureau of Reclamation official website policy reference"
+    },
+    {
+      "id": "USBR-GCD-JET-TUBES-FOUR-WHOLE-DAM",
+      "stateHint": "all_four_jet_tubes_open_whole_dam",
+      "referenceType": "official_photo",
+      "sourceUrl": "https://www.usbr.gov/uc/rm/crsp/gc/",
+      "mediaUrl": "https://www.usbr.gov/uc/img/gallery/gcd/images/3.jpg",
+      "description": "USBR caption: Glen Canyon Dam and all four jet tubes open releasing water for high-flow experiment — March 5, 2008",
+      "licenseUrl": "https://www.usbr.gov/main/about/policies/",
+      "licenseNote": "U.S. Bureau of Reclamation official website policy reference"
+    }
+  ]
+}

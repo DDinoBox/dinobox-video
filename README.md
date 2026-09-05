@@ -26,4 +26,12 @@ http://localhost:5174
 
 ## 생성 데이터
 
+기본 생성 데이터 루트는 프로젝트의 `data/`입니다. `DINOBOX_DATA_DIR`를 지정하면 SQLite 기본 경로와 `audio/`, `tts-jobs/`, `source-cache/`, `projects/`, `media-jobs/`, `openshot-home/`이 모두 해당 디렉터리 아래로 이동합니다. `DINOBOX_DB_PATH`를 지정하면 데이터 루트와 무관하게 그 경로를 DB로 우선 사용합니다.
+
+```bash
+DINOBOX_DATA_DIR=/path/to/dinobox-data npm start
+# DB만 별도 지정할 때
+DINOBOX_DB_PATH=/path/to/shorts.db npm start
+```
+
 `data/`, `projects/`, `node_modules/`는 로컬 생성물이라 Git에 올리지 않습니다.

@@ -1,0 +1,21 @@
+{
+  "caseKey": "engineering-eden-etfe",
+  "label": "에덴 프로젝트 ETFE 공기 쿠션",
+  "domainKey": "engineering",
+  "mechanismType": "pneumatic_thermal_envelope",
+  "topicSelector": { "titleIncludes": "에덴 프로젝트" },
+  "requiredStages": ["fact_check", "production_brief", "script", "shotlist", "clean_sample", "info_sample", "video_sample"],
+  "expectations": {
+    "minimumSupportedClaims": 3,
+    "qualityPolicy": "convergence_v2",
+    "forbiddenPatterns": ["근거 없는 단열 수치", "공기층과 재료층 혼동", "동일 외관 구도 반복"],
+    "assertions": {
+      "expectedStage": "production_brief",
+      "expectedVerdict": "hold",
+      "requiredIssueCodes": ["needs_reference", "occluded_element_required"],
+      "minimumVisualReferences": 2,
+      "allowedReferenceTypes": ["official_photo", "construction_photo", "official_diagram", "official_section"],
+      "requireClaimEvidenceStateLinks": true
+    }
+  }
+}

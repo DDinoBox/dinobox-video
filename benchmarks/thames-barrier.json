@@ -1,0 +1,21 @@
+{
+  "caseKey": "engineering-thames-barrier-tide",
+  "label": "템스 배리어 조수·폭풍 해일 운용",
+  "domainKey": "engineering",
+  "mechanismType": "tidal_surge_gate_operation",
+  "topicSelector": { "titleIncludes": "템스 배리어" },
+  "requiredStages": ["fact_check", "production_brief", "script", "shotlist", "clean_sample", "info_sample", "video_sample"],
+  "expectations": {
+    "minimumSupportedClaims": 3,
+    "qualityPolicy": "convergence_v2",
+    "forbiddenPatterns": ["만조마다 닫는다는 과장", "상류·하류 방향 반전", "닫힘과 재개방 조건 혼동"],
+    "assertions": {
+      "expectedStage": "production_brief",
+      "expectedVerdict": "hold",
+      "requiredIssueCodes": ["unverified_state_split"],
+      "minimumVisualReferences": 2,
+      "allowedReferenceTypes": ["official_photo", "construction_photo", "official_diagram", "official_section"],
+      "requireClaimEvidenceStateLinks": true
+    }
+  }
+}

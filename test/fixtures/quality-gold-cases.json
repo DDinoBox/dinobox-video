@@ -1,0 +1,41 @@
+{
+  "cases": [
+    {
+      "caseKey": "engineering-citigroup-load-path",
+      "expectedIssueCodes": ["needs_reference", "occluded_element_required"],
+      "description": "외관 사진만으로 내부 하중 전달 경로를 요구",
+      "factCheck": { "claims": [{ "id": "C-CITI", "status": "SUPPORTED", "useInVideo": true }], "visualEvidence": [{ "id": "EV-CITI", "claimRefs": ["C-CITI"], "referenceType": "official_photo", "referenceSourceUrl": "https://example.org/citigroup", "referenceMediaUrl": "", "referencePage": 0, "referenceDescription": "외관 사진" }] },
+      "productionBrief": { "visualStates": [{ "stateId": "VS-CITI", "evidenceRefs": ["EV-CITI"], "evidenceBeats": [{ "beatId": "B-CITI", "requiredVisibleElements": ["내부 하중 전달 경로"] }] }] }
+    },
+    {
+      "caseKey": "engineering-eden-etfe",
+      "expectedIssueCodes": ["needs_reference", "occluded_element_required"],
+      "description": "외관으로 ETFE 내부 공기층과 열 손실을 입증",
+      "factCheck": { "claims": [{ "id": "C-EDEN", "status": "SUPPORTED", "useInVideo": true }], "visualEvidence": [{ "id": "EV-EDEN", "claimRefs": ["C-EDEN"], "referenceType": "official_photo", "referenceSourceUrl": "https://example.org/eden", "referenceMediaUrl": "", "referencePage": 0, "referenceDescription": "외피 외관 사진" }] },
+      "productionBrief": { "visualStates": [{ "stateId": "VS-EDEN", "evidenceRefs": ["EV-EDEN"], "evidenceBeats": [{ "beatId": "B-EDEN", "requiredVisibleElements": ["내부 공기층과 열 손실"] }] }] }
+    },
+    {
+      "caseKey": "engineering-hoover-dam-cooling",
+      "expectedIssueCodes": ["needs_reference", "occluded_element_required"],
+      "description": "공식 단면 없이 매립 냉각관과 그라우팅을 요구",
+      "factCheck": { "claims": [{ "id": "C-HOOVER", "status": "SUPPORTED", "useInVideo": true }], "visualEvidence": [{ "id": "EV-HOOVER", "claimRefs": ["C-HOOVER"], "referenceType": "official_photo", "referenceSourceUrl": "https://example.org/hoover", "referenceMediaUrl": "", "referencePage": 0, "referenceDescription": "댐 외관 사진" }] },
+      "productionBrief": { "visualStates": [{ "stateId": "VS-HOOVER", "evidenceRefs": ["EV-HOOVER"], "evidenceBeats": [{ "beatId": "B-HOOVER", "requiredVisibleElements": ["매립 냉각관과 그라우팅"] }] }] }
+    },
+    {
+      "caseKey": "engineering-thames-barrier-tide",
+      "expectedIssueCodes": ["unverified_state_split"],
+      "description": "하나의 조수문 운용 근거를 서로 다른 상태로 부풀림",
+      "factCheck": { "claims": [{ "id": "C-THAMES", "status": "SUPPORTED", "useInVideo": true }], "visualEvidence": [{ "id": "EV-THAMES", "claimRefs": ["C-THAMES"], "referenceType": "official_photo", "referenceSourceUrl": "https://example.org/thames", "referenceMediaUrl": "https://example.org/thames.jpg", "referencePage": 0, "referenceDescription": "조수문 운용 사진" }] },
+      "productionBrief": { "visualStates": [{ "stateId": "VS-THAMES-OPEN", "evidenceRefs": ["EV-THAMES"], "evidenceBeats": [] }, { "stateId": "VS-THAMES-CLOSED", "evidenceRefs": ["EV-THAMES"], "evidenceBeats": [] }] }
+    },
+    {
+      "caseKey": "engineering-falkirk-wheel",
+      "expectedIssueCodes": ["info_direction_missing", "info_anchor_missing", "info_structured_duplicate"],
+      "description": "INFO 앵커·방향·중복 계약 실패",
+      "infoChecks": [
+        { "item": { "infoSpec": { "type": "flow", "labels": ["수조 이동"], "anchors": [], "directionRule": "", "comparisonRule": "" } } },
+        { "layout": { "guidePoints": [{ "x": 0.2, "y": 0.2 }, { "x": 0.7, "y": 0.7 }] }, "item": { "infoSpec": { "type": "flow", "labels": ["수조 이동"], "anchors": [], "directionRule": "", "comparisonRule": "" } }, "previousItems": [{ "infoSpec": { "type": "flow", "labels": ["수조 이동"], "anchors": [], "directionRule": "", "comparisonRule": "" } }] }
+      ]
+    }
+  ]
+}

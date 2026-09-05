@@ -1,0 +1,21 @@
+{
+  "caseKey": "engineering-citigroup-load-path",
+  "label": "시티그룹 센터 하중 전달",
+  "domainKey": "engineering",
+  "mechanismType": "structural_load_path",
+  "topicSelector": { "titleIncludes": "시티그룹 센터" },
+  "requiredStages": ["fact_check", "production_brief", "script", "shotlist", "clean_sample", "info_sample", "video_sample"],
+  "expectations": {
+    "minimumSupportedClaims": 3,
+    "qualityPolicy": "convergence_v2",
+    "forbiddenPatterns": ["보이지 않는 구조 임의 노출", "중력하중과 횡하중 혼동", "지지 없는 부유 구조"],
+    "assertions": {
+      "expectedStage": "production_brief",
+      "expectedVerdict": "hold",
+      "requiredIssueCodes": ["needs_reference", "occluded_element_required"],
+      "minimumVisualReferences": 2,
+      "allowedReferenceTypes": ["official_photo", "construction_photo", "official_diagram", "official_section"],
+      "requireClaimEvidenceStateLinks": true
+    }
+  }
+}
