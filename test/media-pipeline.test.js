@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const tempRoot = path.join(root, "tmp");
+await mkdir(tempRoot, { recursive: true });
 const python = [
   path.join(root, ".venv", "Scripts", "python.exe"),
   "C:\\Users\\com\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
@@ -26,7 +27,7 @@ function runPython(args) {
 }
 
 test("deterministic INFO QC accepts the renderer and rejects CLEAN pixel changes", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "dinobox-info-qc-"));
+  const tempDir = await mkdtemp(path.join(tempRoot, "dinobox-info-qc-"));
   try {
     const cleanPath = path.join(tempDir, "01_CLEAN.png");
     const infoPath = path.join(tempDir, "01_INFO.png");
@@ -163,6 +164,52 @@ test("deterministic INFO QC accepts the renderer and rejects CLEAN pixel changes
     assert.equal(nonePassed.passed, true, nonePassed.errors?.join(" / "));
     assert.equal(nonePassed.overlayCoverage, 0);
 
+    const missingGuideJobPath = path.join(tempDir, "missing-guide-qc-job.json");
+    await writeFile(missingGuideJobPath, JSON.stringify({ ...qcJob, guidesPath: nonePaths.guides }), "utf8");
+    const missingGuide = JSON.parse(runPython([path.join(root, "scripts", "media_qc.py"), missingGuideJobPath]));
+    assert.equal(missingGuide.passed, false, "split layers must reconstruct the published overlay, not just have the same dimensions");
+    assert.equal(missingGuide.checks.deterministicLayers, false);
+
+    const requiredNoneJobPath = path.join(tempDir, "required-none-qc-job.json");
+    const requiredNoneJob = JSON.parse(await readFile(noneQcJobPath, "utf8"));
+    requiredNoneJob.spec.requiresOverlay = true;
+    await writeFile(requiredNoneJobPath, JSON.stringify(requiredNoneJob), "utf8");
+    const requiredNone = JSON.parse(runPython([path.join(root, "scripts", "media_qc.py"), requiredNoneJobPath]));
+    assert.equal(requiredNone.passed, false, "required INFO must not pass as an unchanged CLEAN copy");
+    assert.match(requiredNone.errors.join(" "), /필수 INFO/);
+
+    const subtleInfoPath = path.join(tempDir, "subtle-info.png");
+    runPython(["-c", [
+      "from PIL import Image",
+      `im=Image.open(r'''${infoPath}''').convert('RGB')`,
+      "r,g,b=im.getpixel((0,0))",
+      "im.putpixel((0,0),(r,g,b+1))",
+      `im.save(r'''${subtleInfoPath}''')`
+    ].join("\n")]);
+    const subtleQcPath = path.join(tempDir, "subtle-qc-job.json");
+    await writeFile(subtleQcPath, JSON.stringify({ ...qcJob, infoPath: subtleInfoPath }), "utf8");
+    const subtle = JSON.parse(runPython([path.join(root, "scripts", "media_qc.py"), subtleQcPath]));
+    assert.equal(subtle.passed, false, "even a one-level blue-channel change outside the overlay must be rejected");
+    assert.equal(subtle.outsideChangedPixels, 1);
+
+    const invisibleOverlayPath = path.join(tempDir, "invisible-overlay.png");
+    runPython(["-c", [
+      "from PIL import Image",
+      `base=Image.open(r'''${cleanPath}''').convert('RGBA')`,
+      `mask=Image.open(r'''${overlayPath}''').getchannel('A')`,
+      "base.putalpha(mask)",
+      `base.save(r'''${invisibleOverlayPath}''')`
+    ].join("\n")]);
+    const invisibleQcPath = path.join(tempDir, "invisible-qc-job.json");
+    await writeFile(invisibleQcPath, JSON.stringify({
+      ...qcJob, infoPath: cleanPath, overlayPath: invisibleOverlayPath,
+      spec: { ...spec, requiresOverlay: true }
+    }), "utf8");
+    const invisible = JSON.parse(runPython([path.join(root, "scripts", "media_qc.py"), invisibleQcPath]));
+    assert.ok(invisible.overlayCoverage > 0);
+    assert.equal(invisible.passed, false, "non-empty alpha is not proof of a visible INFO overlay");
+    assert.equal(invisible.visibleOverlayCoverage, 0);
+
     runPython(["-c", [
       "from PIL import Image",
       `p=r'''${infoPath}'''`,
@@ -181,7 +228,7 @@ test("deterministic INFO QC accepts the renderer and rejects CLEAN pixel changes
 });
 
 test("official cover renderer crops panels and QC rejects legacy blurred contain insets", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "dinobox-official-cover-"));
+  const tempDir = await mkdtemp(path.join(tempRoot, "dinobox-official-cover-"));
   try {
     const sourcePath = path.join(tempDir, "source.png");
     const coverPath = path.join(tempDir, "cover.png");
@@ -203,7 +250,7 @@ test("official cover renderer crops panels and QC rejects legacy blurred contain
       "background.paste(foreground,((941-foreground.width)//2,(1672-foreground.height)//2))",
       "background.save(legacy)"
     ].join("\n")]);
-    runPython([path.join(root, "scripts", "render_official_photo_clean.py"), sourcePath, coverPath, "--panel-crop", "[0,0,0.2,0.5]"]);
+    runPython([path.join(root, "scripts", "render_official_photo_clean.py"), sourcePath, coverPath, "--crop-json", JSON.stringify({ panelCrop: [0, 0, 0.2, 0.5], requiredBounds: [0.05, 0.1, 0.1, 0.3] })]);
     const dimensions = JSON.parse(runPython(["-c", [
       "from PIL import Image",
       `im=Image.open(r'''${coverPath}''')`,
@@ -225,7 +272,7 @@ test("official cover renderer crops panels and QC rejects legacy blurred contain
 });
 
 test("official cover renderer uses separately verified two-panel sources in declared order", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "dinobox-official-sequence-"));
+  const tempDir = await mkdtemp(path.join(tempRoot, "dinobox-official-sequence-"));
   try {
     const portPath = path.join(tempDir, "port.png");
     const starboardPath = path.join(tempDir, "starboard.png");
@@ -265,7 +312,7 @@ test("official cover renderer uses separately verified two-panel sources in decl
 });
 
 test("media QC rejects synthetic letterbox, pillarbox, and small sharp insets", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "dinobox-blur-insets-"));
+  const tempDir = await mkdtemp(path.join(tempRoot, "dinobox-blur-insets-"));
   try {
     const fixtures = {
       letterbox: path.join(tempDir, "letterbox.png"),
@@ -298,6 +345,60 @@ test("media QC rejects synthetic letterbox, pillarbox, and small sharp insets", 
     }
   } finally {
     await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("media QC rejects the three real approved blurred-contain failures at multiple resolutions", () => {
+  const results = JSON.parse(runPython(["-B", "-c", [
+    "import hashlib, json, runpy",
+    "from pathlib import Path",
+    "from PIL import Image",
+    "qc=runpy.run_path('scripts/media_qc.py')",
+    "results=[]",
+    "fixtures=Path('test/fixtures/media')",
+    "for case in json.loads((fixtures/'provenance.json').read_text(encoding='utf-8'))['cases']:",
+    "    source=fixtures/case['file']",
+    "    assert hashlib.sha256(source.read_bytes()).hexdigest()==case['sha256'], source.name",
+    "    with Image.open(source) as opened:",
+    "        image=opened.convert('RGB')",
+    "        variants={'native':image,'resized':image.resize((720,1280),Image.Resampling.LANCZOS),'pillarbox':image.transpose(Image.Transpose.ROTATE_90)}",
+    "        results.append({'file':source.name,'qc':qc['inspect_image'](source,[]),'variants':{name:qc['detect_blurred_contain_inset'](frame) for name,frame in variants.items()}})",
+    "print(json.dumps(results))"
+  ].join("\n")]));
+  assert.equal(results.length, 3);
+  for (const result of results) {
+    assert.equal(result.qc.passed, false, `${result.file} must not retain its historical false PASS`);
+    assert.match(result.qc.errors.join(" "), /blur\+contain/);
+    for (const [variant, qc] of Object.entries(result.variants)) {
+      assert.equal(qc.detected, true, `${result.file}/${variant}`);
+      assert.equal(qc.pattern, variant === "pillarbox" ? "pillarbox" : "letterbox");
+    }
+  }
+});
+
+test("media QC keeps full-bleed photos, low contrast, and gradual depth of field valid", () => {
+  const results = JSON.parse(runPython(["-B", "-c", [
+    "import json, runpy",
+    "from pathlib import Path",
+    "from PIL import Image, ImageOps, ImageEnhance, ImageFilter, ImageDraw",
+    "qc=runpy.run_path('scripts/media_qc.py')",
+    "results=[]",
+    "for source in sorted(Path('test/fixtures/media').glob('glen-canyon-blurred-contain-*.png')):",
+    "    with Image.open(source) as opened:",
+    "        image=opened.convert('RGB')",
+    "        foreground=image.crop((0,round(image.height*.29)+3,image.width,round(image.height*.71)-3))",
+    "        cover=ImageOps.fit(foreground,(720,1280),method=Image.Resampling.LANCZOS)",
+    "        mask=Image.new('L',cover.size,0)",
+    "        ImageDraw.Draw(mask).ellipse((100,300,620,1000),fill=255)",
+    "        mask=mask.filter(ImageFilter.GaussianBlur(90))",
+    "        depth=Image.composite(cover,cover.filter(ImageFilter.GaussianBlur(20)),mask)",
+    "        variants={'cover':cover,'low_contrast':ImageEnhance.Contrast(cover).enhance(.45),'depth_of_field':depth,'landscape':foreground}",
+    "        results.extend({'file':source.name,'variant':name,'qc':qc['detect_blurred_contain_inset'](frame)} for name,frame in variants.items())",
+    "print(json.dumps(results))"
+  ].join("\n")]));
+  assert.equal(results.length, 12);
+  for (const result of results) {
+    assert.equal(result.qc.detected, false, `${result.file}/${result.variant}: ${JSON.stringify(result.qc)}`);
   }
 });
 

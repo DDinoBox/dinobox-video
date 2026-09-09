@@ -2904,6 +2904,11 @@
     .workbench-progress { display:none; }
     .workbench-progress-step { border-radius:4px; }
     .usage-guard-strip { padding:7px 24px; }
+    .workbench-shell { grid-template-rows:auto auto auto minmax(0,1fr); }
+    .durable-panel { flex-wrap:wrap; white-space:normal; overflow:visible; }
+    .durable-panel > strong { flex:1 1 100%; }
+    #durable-status { flex:1 1 100%; min-width:0; display:flex; flex-wrap:wrap; gap:6px; overflow-wrap:anywhere; }
+    #durable-status p { flex:1 1 100%; margin:0; }
     .workbench-body { grid-template-columns:1fr; grid-template-rows:auto minmax(0,1fr); min-height:0; }
     .workbench-tabs { padding:0 24px; display:flex; align-items:stretch; gap:2px; overflow-x:auto; background:#fff; border:0; border-bottom:1px solid var(--line); }
     .workbench-tab { position:relative; min-height:52px; padding:0 14px; color:#65717b; border-radius:0; border:0; text-align:center; white-space:nowrap; font-size:14px; font-weight:600; }
@@ -3280,6 +3285,15 @@
             <span>예상 작업량을 계산하는 중입니다.</span>
           </div>
 
+          <section class="usage-guard-strip durable-panel" aria-label="Durable 실행 상태">
+            <strong>Durable · CLEAN / INFO까지</strong>
+            <div id="durable-status" aria-live="polite">주제를 선택하세요. H3 / 영상은 자동 실행하지 않습니다.</div>
+            <button type="button" class="small-action" id="durable-refresh" disabled>상태 새로고침</button>
+            <button type="button" class="small-action primary" id="durable-start" disabled>새 실행 시작</button>
+            <button type="button" class="small-action" id="durable-cancel" disabled>실행 취소</button>
+            <button type="button" class="small-action" id="durable-clean-review" disabled>CLEAN 검수로 이동</button>
+            <button type="button" class="small-action" id="durable-info-review" disabled>INFO 검수로 이동</button>
+          </section>
           <div class="workbench-progress" id="workbench-progress"></div>
 
           <div class="workbench-body">
@@ -4417,7 +4431,7 @@
         ${assetDetailBlock("QC 메모", asset.note)}
         <div class="asset-viewer-actions">
           <a class="small-action" href="${escapeHtml(asset.url)}" target="_blank" rel="noreferrer">원본 열기</a>
-          <button type="button" class="small-action primary" data-review-asset="OK">승인</button>
+          <button type="button" class="small-action primary" data-review-asset="OK" ${asset.autoQc?.passed !== true || asset.autoQc?.stale || asset.status === "REPLACE_CANDIDATE" ? "disabled" : ""}>승인</button>
           <button type="button" class="small-action" data-edit-asset-prompt>수정</button>
         </div>
       `;
@@ -4801,8 +4815,10 @@
       }
 
       assetReviewOutput.innerHTML = `<div class="script-empty"><strong class="inline-loader">생성된 이미지 파일을 읽는 중...</strong></div>`;
+      const selection = workbenchSelection;
       const response = await fetch(`/api/assets?topicId=${encodeURIComponent(topicId)}`);
       const payload = await response.json();
+      if (selection !== workbenchSelection || topicId !== selectedTopicDetail?.topic?.id) return;
       if (!response.ok) {
         throw new Error(payload.error || "자산 목록을 불러오지 못했습니다.");
       }
@@ -4930,6 +4946,7 @@
     }
 
     async function generateVideos(clipIndexes = null, force = false) {
+      if (isDurableReviewOnly()) throw new Error("Durable 실행은 CLEAN / INFO 검수까지만 지원합니다.");
       const topicId = selectedTopicDetail?.topic?.id;
       if (!topicId) return;
       const response = await fetch("/api/video/generate", {
@@ -4943,6 +4960,7 @@
     }
 
     async function loadVideoPlan() {
+      if (isDurableReviewOnly()) return;
       const topicId = selectedTopicDetail?.topic?.id;
       if (!topicId) {
         renderVideoPlan(null);
@@ -5403,6 +5421,11 @@
         disabled = !selectedEditPlan?.ready;
       }
 
+      if (isDurableReviewOnly() && ["generate-videos", "open-editor"].includes(action)) {
+        action = "";
+        label = "검수 완료 · 영상은 별도 작업";
+        disabled = true;
+      }
       workbenchNextButton.dataset.action = action;
       workbenchNextButton.textContent = label;
       workbenchNextButton.disabled = disabled;
@@ -5424,6 +5447,7 @@
     }
 
     function setWorkbenchPane(target) {
+      if (isDurableReviewOnly() && ["video", "publish"].includes(target)) return;
       const targetButton = document.querySelector(`.workbench-tab[data-workbench-pane="${target}"]`);
       if (targetButton?.disabled) return;
       activeWorkbenchPane = target;
@@ -5517,9 +5541,9 @@
         tts: !scriptApproved,
         shotlist: !ttsGenerated,
         assets: !shotlistGenerated,
-        info: !cleanReady,
-        video: !infoReady,
-        publish: !videoReady,
+        info: !cleanReady && !(isDurableReviewOnly() && selectedTopicAssets?.info?.length),
+        video: isDurableReviewOnly() || !infoReady,
+        publish: isDurableReviewOnly() || !videoReady,
         log: !detail?.topic
       };
 
@@ -5577,8 +5601,112 @@
       `;
     }
 
+    // Durable panel is independent of legacy stage completion and asset approval.
+    const durableStatus = document.getElementById("durable-status");
+    const durableStart = document.getElementById("durable-start");
+    const durableCancel = document.getElementById("durable-cancel");
+    const durableRefresh = document.getElementById("durable-refresh");
+    const durableCleanReview = document.getElementById("durable-clean-review");
+    const durableInfoReview = document.getElementById("durable-info-review");
+    let workbenchSelection = 0;
+    let durableTopicId = null;
+    let durableData = null;
+    let durableRequest = 0;
+    const durablePending = new Set();
+    const durableKeys = new Map();
+    const durableTopics = new Set();
+    function isDurableReviewOnly() { return durableTopics.has(Number(selectedTopicDetail?.topic?.id)); }
+    async function openDurableReview(pane) {
+      const selection = workbenchSelection;
+      if (Number(durableTopicId) !== Number(selectedTopicDetail?.topic?.id)) return;
+      await loadAssetReview();
+      if (selection !== workbenchSelection) return;
+      updateWorkbenchTabLocks(selectedTopicDetail);
+      setWorkbenchPane(pane);
+    }
+    durableCleanReview.addEventListener("click", () => openDurableReview("assets").catch(error => renderDurablePanel(error.message)));
+    durableInfoReview.addEventListener("click", () => openDurableReview("info").catch(error => renderDurablePanel(error.message)));
+
+    function renderDurablePanel(message = "") {
+      const data = durableData;
+      const busy = durablePending.has(durableTopicId);
+      durableStart.disabled = busy || data?.enabled !== true || data?.canStart !== true;
+      durableCancel.disabled = busy || !data?.cancelScope;
+      durableRefresh.disabled = !durableTopicId || busy;
+      durableCleanReview.disabled = busy || data?.execution !== "awaiting_user_review";
+      durableInfoReview.disabled = durableCleanReview.disabled;
+      durableCancel.textContent = data?.cancelScope?.type === "batch" ? "공유 batch 전체 취소" : "실행 취소";
+      if (!data) {
+        durableStatus.textContent = message || "상태 확인 중 · 품질 / 입력 / 승인 unknown";
+        return;
+      }
+      const fields = [["실행", data.execution], ["기계 품질", data.quality], ["입력 최신성", data.inputFreshness],
+        ["사용자 승인", data.userApproval], ["다음 조치 담당", data.nextAction?.owner]];
+      durableStatus.innerHTML = fields.map(([name, value]) => `<span class="usage-guard-item">${name}: ${escapeHtml(value || "unknown")}</span>`).join("")
+        + ["run", "batch"].map(scope => {
+          const b = data.budgets?.[scope];
+          return `<span class="usage-guard-item">${scope} 예산: ${b ? `호출 ${b.callsUsed}/${b.callsLimit} · 시도 ${b.attemptsUsed}/${b.attemptsLimit} · 기한 ${escapeHtml(new Date(b.deadlineMs).toLocaleString())}` : "unknown"}</span>`;
+        }).join("")
+        + `<p>run ${escapeHtml(data.run?.id || "없음")} (${escapeHtml(data.run?.status || "unknown")} / ${escapeHtml(data.run?.current_stage || "unknown")}) · batch ${escapeHtml(data.batch?.id || "없음")} (${escapeHtml(data.batch?.status || "unknown")})</p>`
+        + `<p>${escapeHtml(message || data.nextAction?.message || "상태 확인 필요")} ${escapeHtml(data.nextAction?.reason || "")}</p>`
+        + `<span>기계 PASS ≠ 최종 승인. ${data.userApproval === "approved" && data.inputFreshness === "current" ? "" : "기존 CLEAN / INFO 검수에서 승인하세요. "}H3 / 영상 자동 실행 없음.</span>`;
+    }
+
+    async function loadDurableStatus(topicId) {
+      durableTopicId = topicId || null;
+      durableData = null;
+      const requestId = ++durableRequest;
+      renderDurablePanel(topicId ? "" : "주제를 선택하세요.");
+      if (!topicId) return;
+      try {
+        const response = await fetch(`/api/pipeline/topics/${topicId}`);
+        const data = await response.json();
+        if (requestId !== durableRequest) return;
+        if (!response.ok) throw new Error(response.status === 503 ? "비활성 (503): durable pipeline이 꺼져 있습니다. 기존 작업 기능은 유지됩니다." : data.error || `HTTP ${response.status}`);
+        durableData = data;
+        if (data.run || data.batch) durableTopics.add(Number(topicId));
+        renderDurablePanel();
+      } catch (error) {
+        if (requestId === durableRequest) renderDurablePanel(`조회 실패 · ${error.message} · 품질 / 입력 / 승인 unknown`);
+      }
+    }
+
+    async function submitDurableAction(action) {
+      const topicId = durableTopicId;
+      const data = durableData;
+      if (!topicId || durablePending.has(topicId) || !data?.enabled) return;
+      if (action === "start" && !data.canStart || action === "cancel" && !data.cancelScope) return;
+      if (action === "cancel" && !confirm(data.cancelScope.type === "batch"
+        ? "이 batch의 모든 후보와 공유 예산 범위를 취소합니다. 계속할까요?" : "이 실행을 취소할까요?")) return;
+      durablePending.add(topicId);
+      renderDurablePanel("요청 처리 중...");
+      let message = "";
+      try {
+        if (action === "start" && !durableKeys.has(topicId)) durableKeys.set(topicId, crypto.randomUUID());
+        const route = action === "start" ? "/api/pipeline/runs" : `/api/pipeline/${data.cancelScope.type === "batch" ? "batches" : "runs"}/${encodeURIComponent(data.cancelScope.id)}/cancel`;
+        const response = await fetch(route, { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(action === "start" ? { topicId, requestKey: durableKeys.get(topicId) } : {}) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        if (action === "start") durableKeys.delete(topicId);
+      } catch (error) {
+        message = `요청 실패: ${error.message}. 새로고침으로 상태를 확인하세요. 불명확한 시작 요청은 같은 키로 재시도합니다.`;
+      } finally {
+        durablePending.delete(topicId);
+        if (durableTopicId === topicId) {
+          await loadDurableStatus(topicId);
+          if (message) renderDurablePanel(message);
+        }
+      }
+    }
+    durableStart.addEventListener("click", () => submitDurableAction("start"));
+    durableCancel.addEventListener("click", () => submitDurableAction("cancel"));
+    durableRefresh.addEventListener("click", () => loadDurableStatus(durableTopicId));
+    // End durable panel.
+
     function renderWorkbenchOverview(detail) {
       const topic = detail?.topic;
+      void loadDurableStatus(topic?.id);
       const factCheck = detail?.factCheck;
       const script = detail?.script;
 
@@ -5692,8 +5820,12 @@
     async function refreshWorkbenchDetail() {
       const topicId = selectedTopicDetail?.topic?.id;
       if (!topicId) return;
-      selectedTopicDetail = await getTopicDetail(topicId);
+      const selection = workbenchSelection;
+      const detail = await getTopicDetail(topicId);
+      if (selection !== workbenchSelection || topicId !== selectedTopicDetail?.topic?.id) return;
+      selectedTopicDetail = detail;
       await loadTtsPlan();
+      if (selection !== workbenchSelection) return;
       renderScriptDetail(selectedTopicDetail);
       renderShotlist(selectedTopicDetail?.shotlist);
       renderWorkbenchOverview(selectedTopicDetail);
@@ -5864,8 +5996,12 @@
     }
 
     async function recoverTopicAfterFailure(topicId) {
+      const selection = workbenchSelection;
+      if (topicId !== selectedTopicDetail?.topic?.id) return;
       try {
-        selectedTopicDetail = await getTopicDetail(topicId);
+        const detail = await getTopicDetail(topicId);
+        if (selection !== workbenchSelection || topicId !== selectedTopicDetail?.topic?.id) return;
+        selectedTopicDetail = detail;
         renderScriptDetail(selectedTopicDetail);
         renderWorkbenchOverview(selectedTopicDetail);
         renderWorkbenchProgress(selectedTopicDetail);
@@ -5972,8 +6108,10 @@
         return;
       }
 
+      const selection = workbenchSelection;
       const response = await fetch(`/api/tts/plan?topicId=${encodeURIComponent(topicId)}`);
       const payload = await response.json();
+      if (selection !== workbenchSelection || topicId !== selectedTopicDetail?.topic?.id) return;
       if (!response.ok) {
         throw new Error(payload.error || "TTS 계획을 불러오지 못했습니다.");
       }
@@ -6076,6 +6214,7 @@
     }
 
     async function finalizeInfoAssets() {
+      const selection = workbenchSelection;
       const topicId = selectedTopicDetail?.topic?.id;
       if (!topicId) return null;
       const response = await fetch("/api/assets/info/finalize", {
@@ -6085,12 +6224,16 @@
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "INFO 전체 승인에 실패했습니다.");
+      if (selection !== workbenchSelection) return payload;
       await loadAssetReview();
-      await loadVideoPlan();
+      if (selection !== workbenchSelection) return payload;
+      await loadDurableStatus(topicId);
+      if (selection === workbenchSelection && !isDurableReviewOnly()) await loadVideoPlan();
       return payload;
     }
 
     async function finalizeCleanAndGenerateInfo() {
+      const selection = workbenchSelection;
       const topicId = selectedTopicDetail?.topic?.id;
       const clean = selectedTopicAssets?.clean || [];
       const expected = selectedTopicAssets?.expectedCount || selectedTopicDetail?.shotlist?.clipCount || 0;
@@ -6104,9 +6247,13 @@
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "CLEAN 전체 승인에 실패했습니다.");
+      if (selection !== workbenchSelection) return payload;
       await loadBackgroundJobs();
+      if (selection !== workbenchSelection) return payload;
       await loadAssetReview();
-      setWorkbenchPane("info");
+      if (selection !== workbenchSelection) return payload;
+      await loadDurableStatus(topicId);
+      if (selection === workbenchSelection) setWorkbenchPane("info");
       return payload;
     }
 
@@ -6152,6 +6299,8 @@
     }
 
     async function reviewCurrentAsset(status) {
+      const selection = workbenchSelection;
+      const topicId = selectedTopicDetail?.topic?.id;
       const asset = selectedTopicAssets?.[assetViewerType]?.[assetViewerIndex];
       const meta = getAssetShotMeta(asset);
       if (!asset || !meta) throw new Error("검수할 장면 자산을 찾을 수 없습니다.");
@@ -6159,17 +6308,21 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          topicId: selectedTopicDetail.topic.id,
+          topicId,
           clipIndex: meta.sortIndex,
           assetType: assetViewerType,
           assetPath: asset.path,
+          previousAssetHash: asset.contentHash,
           status
         })
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "이미지 검수 저장에 실패했습니다.");
+      if (selection !== workbenchSelection) return payload;
       await loadAssetReview();
-      renderAssetViewer();
+      if (selection !== workbenchSelection) return payload;
+      await loadDurableStatus(topicId);
+      if (selection === workbenchSelection) renderAssetViewer();
       return payload;
     }
 
@@ -6204,13 +6357,18 @@
       if (!cleanReady) return "assets";
       const infoReady = expected > 0 && (selectedTopicAssets?.info?.length || 0) >= expected
         && selectedTopicAssets.info.every((asset) => asset.status === "OK");
-      if (!infoReady) return "info";
+      if (!infoReady || isDurableReviewOnly()) return "info";
       if ((selectedVideoPlan?.videoApprovedCount || 0) < expected) return "video";
       return "publish";
     }
 
     async function openTopicWorkbench(id, pane = null) {
+      const selection = ++workbenchSelection;
+      const durableLoad = loadDurableStatus(id);
       scriptEditorMode = false;
+      selectedTopicDetail = null;
+      closeAssetViewer();
+      workbenchNextButton.disabled = true;
       selectedShotlistIndex = 0;
       selectedCleanReviewIndex = 0;
       selectedInfoReviewIndex = 0;
@@ -6221,22 +6379,27 @@
       workbenchModal.hidden = false;
       workbenchModal.classList.add("active");
       document.body.style.overflow = "hidden";
-      setWorkbenchPane(pane || "fact");
+      setWorkbenchPane("fact");
       workbenchTitle.textContent = "불러오는 중...";
       workbenchMeta.textContent = "SQLite에서 후보 상세를 읽고 있습니다.";
       workbenchOverview.innerHTML = `<div class="script-empty"><strong class="inline-loader">작업창 준비 중...</strong></div>`;
 
       const detail = await getTopicDetail(id);
+      if (selection !== workbenchSelection) return;
       selectedTopicDetail = detail;
       renderScriptDetail(detail);
       await loadTtsPlan();
+      await durableLoad;
+      if (selection !== workbenchSelection) return;
       if (detail?.shotlist?.status === "approved") {
         await loadAssetReview();
+        if (selection !== workbenchSelection) return;
         const expected = detail.shotlist.clipCount || 0;
         const infoReady = expected > 0 && (selectedTopicAssets?.info?.length || 0) >= expected
           && selectedTopicAssets.info.every((asset) => asset.status === "OK");
-        if (infoReady) await loadVideoPlan();
+        if (infoReady && !isDurableReviewOnly()) await loadVideoPlan();
       }
+      if (selection !== workbenchSelection) return;
       renderShotlist(selectedTopicDetail?.shotlist);
       renderWorkbenchOverview(detail);
       renderWorkbenchProgress(detail);
@@ -6244,6 +6407,9 @@
     }
 
     function closeTopicWorkbench() {
+      ++workbenchSelection;
+      void loadDurableStatus(null);
+      closeAssetViewer();
       scriptEditorMode = false;
       workbenchModal.classList.remove("active");
       workbenchModal.hidden = true;

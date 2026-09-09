@@ -12,6 +12,24 @@ import {
 } from "../lib/quality-gates.js";
 import { buildBenchmarkReportCase } from "../scripts/quality-eval-report.mjs";
 
+test('native visual reviews send image attachments rather than path-only prompts', async () => {
+  const source = await readFile(new URL('../server.js', import.meta.url), 'utf8');
+  const block = source.match(/const input = control\.imagePaths\?\.length[\s\S]*?: prompt;/)?.[0];
+  assert.ok(block);
+  const build = new Function('control', 'prompt', 'path', `${block}\nreturn input;`);
+  const control = { imagePaths: ['clean.png', 'info.png'] };
+  assert.deepEqual(build(control, 'review', { resolve: value => `/isolated/${value}` }), [
+    { type: 'text', text: 'review' },
+    { type: 'local_image', path: '/isolated/clean.png' },
+    { type: 'local_image', path: '/isolated/info.png' }
+  ]);
+  assert.equal(build({}, 'text-only', {}), 'text-only');
+  assert.deepEqual(control.imagePaths, ['clean.png', 'info.png']);
+  assert.match(source, /imagePaths: \[cleanPath, infoPath\]/);
+  assert.match(source, /imagePaths: \[outputPath,/);
+  assert.match(source, /imagePaths: chunk\.map\(scene => scene\.imagePath\)/);
+});
+
 const validEvidence = {
   id: "EV-01", claimRefs: ["C-01"], referenceType: "official_section",
   referenceSourceUrl: "https://example.org/report.pdf", referenceMediaUrl: "",

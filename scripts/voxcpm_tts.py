@@ -23,6 +23,25 @@ def should_apply_style(job):
     return not reference_audio_path and not prompt_wav_path
 
 
+def model_load_contract():
+    if os.environ.get("DINOBOX_PIPELINE_PROVIDER_WORKER") != "1":
+        return "openbmb/VoxCPM2", {"load_denoiser": False}
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    model_value = os.environ.get("DINOBOX_VOXCPM_MODEL_DIR")
+    cache_value = os.environ.get("DINOBOX_VOXCPM_OFFLINE_CACHE")
+    if not model_value or not cache_value:
+        raise ValueError("provider_unavailable:voxcpm_local_model_or_cache_missing")
+    model, cache = Path(model_value).resolve(), Path(cache_value).resolve()
+    if not model.is_relative_to(root) or not cache.is_relative_to(root) or not model.is_dir():
+        raise ValueError("provider_unavailable:voxcpm_local_paths_invalid")
+    # Set offline/cache boundaries before importing any Hugging Face consumers.
+    os.environ.update({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+                       "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HOME": str(cache),
+                       "HF_HUB_CACHE": str(cache / "hub"), "TRANSFORMERS_CACHE": str(cache / "transformers")})
+    return str(model), {"load_denoiser": False, "local_files_only": True, "cache_dir": str(cache)}
+
+
 def main():
     if len(sys.argv) < 2:
         fail("job json path is required")
@@ -30,6 +49,11 @@ def main():
     job_path = sys.argv[1]
     with open(job_path, "r", encoding="utf-8") as file:
         job = json.load(file)
+
+    try:
+        model_path, model_options = model_load_contract()
+    except ValueError as exc:
+        fail(str(exc))
 
     try:
         import numpy as np
@@ -48,7 +72,7 @@ def main():
         np.random.seed(seed)
         torch.manual_seed(seed)
 
-        model = VoxCPM.from_pretrained("openbmb/VoxCPM2", load_denoiser=False)
+        model = VoxCPM.from_pretrained(model_path, **model_options)
         sample_rate = getattr(getattr(model, "tts_model", None), "sample_rate", 48000)
         outputs = []
         chunks = []

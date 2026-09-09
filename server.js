@@ -1,19 +1,39 @@
 import http from "node:http";
+import { durableLocalTtsEnvironment } from "./lib/pipeline-local-tts.js";
+import { createReferenceBinding, validateReferenceBinding } from "./lib/pipeline-reference-binding.js";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { copyFile, readFile, mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Codex } from "@openai/codex-sdk";
 import { validateEvidencePacket, validateInfoLayoutContract, validateOfficialVisualPreflight, validateProductionBriefEvidence } from "./lib/quality-gates.js";
-import { getNextPipelineJob } from "./lib/pipeline-convergence.js";
+import { getNextPipelineJob, isPipelineAssetReady } from "./lib/pipeline-convergence.js";
+import { bootstrapPipelineStore, validatePipelineBootstrap } from "./lib/pipeline-bootstrap.js";
+import { PipelineRunner } from "./lib/pipeline-runner.js";
+import { validateBatchStartContract, validatePipelineFeasibility, validateOfficialCropFeasibility } from "./lib/pipeline-feasibility.js";
+import { prepareStagedProvider } from "./lib/pipeline-provider-adapter.js";
+import { buildPipelineInputSnapshot, hashPipelineInputSnapshot, hashPipelineVisualSnapshot, hashPipelineInfoClipSnapshot, hashPipelineCleanClipSnapshot } from "./lib/pipeline-contract.js";
+import { getInfoInput, migrateInfoInputs, recordInfoUserInput } from "./lib/pipeline-info-input.js";
+import { narrationPatchSchema, scriptRepairHash, selectNarrationRepairTarget, applyNarrationPatch } from "./lib/pipeline-script-repair.js";
+import { readPcmWav, concatenatePcmWavs, validateTtsRepairTransition, validateMeasuredRepairAudio } from "./lib/pipeline-tts-repair.js";
+import { shotlistPatchSchema, shotlistRepairHash, selectShotlistRepairTarget, applyShotlistPatch, shotlistRepairHoldReason } from "./lib/pipeline-shotlist-repair.js";
+import { infoLayoutPatchSchema, infoRepairHash, selectInfoRepairTarget, applyInfoLayoutPatch } from "./lib/pipeline-info-repair.js";
+import { selectUpstreamNarrationTarget, validateUpstreamNarrationTransition } from './lib/pipeline-upstream-repair.js';
+import { AsyncLocalStorage } from "node:async_hooks";
+
+const pipelineExecution = new AsyncLocalStorage();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 5174);
 const DATA_DIR = path.resolve(process.env.DINOBOX_DATA_DIR || path.join(__dirname, "data"));
 const DB_PATH = process.env.DINOBOX_DB_PATH || path.join(DATA_DIR, "shorts.db");
+const DURABLE_PIPELINE_ENABLED = validatePipelineBootstrap(process.env, __dirname);
+const PIPELINE_PROVIDER_WORKER = process.env.DINOBOX_PIPELINE_PROVIDER_WORKER === "1";
+if (PIPELINE_PROVIDER_WORKER && !DURABLE_PIPELINE_ENABLED) throw new Error("provider_worker_requires_isolated_bootstrap");
+const isolatedProviderOverrides = new AsyncLocalStorage();
 const DISABLE_BACKGROUND_WORKERS = process.env.DISABLE_BACKGROUND_WORKERS === "1";
 const DISABLE_AUTOMATIC_REMEDIATION = process.env.DINOBOX_DISABLE_AUTOMATIC_REMEDIATION === "1";
 const AI_WORKER_TOPIC_ID = Math.max(0, Math.trunc(Number(process.env.DINOBOX_AI_WORKER_TOPIC_ID || 0)));
@@ -142,12 +162,14 @@ const SCRIPT_STATE_TTS_BUDGET_SEC = 3.5;
 const LOCAL_TTS_PYTHON = path.join(__dirname, ".venv", "Scripts", "python.exe");
 const BUNDLED_PYTHON = "C:\\Users\\com\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe";
 const PYTHON_BIN = process.env.TTS_PYTHON_BIN || (existsSync(LOCAL_TTS_PYTHON) ? LOCAL_TTS_PYTHON : BUNDLED_PYTHON);
-const PDF_PYTHON_BIN = process.env.PDF_PYTHON_BIN || BUNDLED_PYTHON;
+// Durable rendering defaults to the project runtime; explicit configuration wins.
+const PDF_PYTHON_BIN = process.env.PDF_PYTHON_BIN || (DURABLE_PIPELINE_ENABLED ? LOCAL_TTS_PYTHON : BUNDLED_PYTHON);
 const VOXCPM_RUNNER = path.join(__dirname, "scripts", "voxcpm_tts.py");
 const PDF_TEXT_RUNNER = path.join(__dirname, "scripts", "extract_pdf_text.py");
 const REFERENCE_IMAGE_RUNNER = path.join(__dirname, "scripts", "normalize_reference_image.py");
 const OFFICIAL_PHOTO_CLEAN_RUNNER = path.join(__dirname, "scripts", "render_official_photo_clean.py");
-const PDFTOPPM_BIN = path.join(path.dirname(PDF_PYTHON_BIN), "..", "native", "poppler", "Library", "bin", "pdftoppm.exe");
+// Poppler is separate from the image renderer runtime; never infer it from local venv selection.
+const PDFTOPPM_BIN = process.env.PDFTOPPM_BIN || path.join(path.dirname(process.env.PDF_PYTHON_BIN || BUNDLED_PYTHON), "..", "native", "poppler", "Library", "bin", "pdftoppm.exe");
 const INFO_RENDERER = path.join(__dirname, "scripts", "render_info_overlay.py");
 const MEDIA_QC_RUNNER = path.join(__dirname, "scripts", "media_qc.py");
 const USER_CODEX_HOME = path.join(process.env.USERPROFILE || "C:\\Users\\com", ".codex");
@@ -446,6 +468,12 @@ function seedBenchmarkCases() {
       required_stages_json = excluded.required_stages_json,
       expectations_json = excluded.expectations_json,
       updated_at = CURRENT_TIMESTAMP
+    WHERE benchmark_cases.topic_id IS NOT excluded.topic_id
+      OR benchmark_cases.label IS NOT excluded.label
+      OR benchmark_cases.domain_key IS NOT excluded.domain_key
+      OR benchmark_cases.mechanism_type IS NOT excluded.mechanism_type
+      OR benchmark_cases.required_stages_json IS NOT excluded.required_stages_json
+      OR benchmark_cases.expectations_json IS NOT excluded.expectations_json
   `);
   for (const name of readdirSync(BENCHMARK_DIR).filter((entry) => entry.endsWith(".json"))) {
     try {
@@ -480,8 +508,14 @@ function seedBenchmarkCases() {
   }
 }
 
-db.exec("UPDATE video_jobs SET status = 'queued', error = '' WHERE status = 'running'");
-db.exec(`
+const pipelineStore = bootstrapPipelineStore(db, DURABLE_PIPELINE_ENABLED);
+const pipelineRunner = pipelineStore ? new PipelineRunner(pipelineStore, { artifactRoot: DATA_DIR }) : null;
+const hasDurableJobColumns = db.prepare("PRAGMA table_info(jobs)").all().some(row => row.name === "run_id");
+
+// Legacy recovery does not own run-bound jobs. Expired durable leases are
+// reconciled by the store; an unknown external result is never blindly replayed.
+if (!PIPELINE_PROVIDER_WORKER) db.exec("UPDATE video_jobs SET status = 'queued', error = '' WHERE status = 'running'");
+if (!PIPELINE_PROVIDER_WORKER) db.exec(`
   INSERT OR IGNORE INTO schema_migrations (version, name) VALUES
     (1, 'initial_schema'),
     (2, 'durable_background_jobs'),
@@ -506,7 +540,7 @@ db.exec(`
         ELSE completed_at
       END,
       updated_at = CURRENT_TIMESTAMP
-  WHERE status = 'running';
+  WHERE status = 'running' ${hasDurableJobColumns ? "AND run_id IS NULL" : ""};
 `);
 
 function ensureColumn(table, column, definition) {
@@ -747,6 +781,11 @@ db.exec(`
     (8, 'evidence_packets_and_ai_invocations');
 `);
 
+if (DURABLE_PIPELINE_ENABLED) {
+  migrateInfoInputs(db);
+  ensureColumn("ai_invocations", "run_id", "TEXT");
+  ensureColumn("ai_invocations", "lease_token", "TEXT NOT NULL DEFAULT ''");
+}
 ensureColumn("asset_reviews", "auto_qc_json", "TEXT NOT NULL DEFAULT '{}'");
 ensureColumn("topics", "run_lane", "TEXT NOT NULL DEFAULT 'production'");
 ensureColumn("topics", "external_key", "TEXT NOT NULL DEFAULT ''");
@@ -804,9 +843,9 @@ db.exec(`
     (11, 'benchmark_replacement_candidates');
 `);
 
-seedBenchmarkCases();
+if (!PIPELINE_PROVIDER_WORKER) seedBenchmarkCases();
 
-db.prepare(`
+if (!PIPELINE_PROVIDER_WORKER) db.prepare(`
   UPDATE video_jobs
   SET profile_id = 'legacy',
       settings_json = '{"id":"legacy","label":"기존 4스텝","steps":4,"loraName":""}'
@@ -850,7 +889,7 @@ function registerUntrackedLegacyVideos() {
   }
 }
 
-registerUntrackedLegacyVideos();
+if (!PIPELINE_PROVIDER_WORKER) registerUntrackedLegacyVideos();
 
 function backfillVideoMetadata() {
   const rows = db.prepare(`
@@ -871,9 +910,9 @@ function backfillVideoMetadata() {
   }
 }
 
-backfillVideoMetadata();
+if (!PIPELINE_PROVIDER_WORKER) backfillVideoMetadata();
 
-db.exec(`
+if (!PIPELINE_PROVIDER_WORKER) db.exec(`
   UPDATE topics
   SET review_status = CASE (SELECT status FROM fact_checks WHERE fact_checks.topic_id = topics.id)
         WHEN 'PASS' THEN 'verified'
@@ -2305,6 +2344,7 @@ function mapShotlistRow(row) {
     cleanPrompt: item.cleanPrompt,
     infoPrompt: item.infoPrompt,
     infoSpec: parseStoredJson(item.infoSpecJson, {}),
+    infoInput: getInfoInput(db, item.id),
     videoPrompt: item.videoPrompt,
     fileStub: item.fileStub,
     status: item.status,
@@ -2471,6 +2511,7 @@ function runProcess(command, args, options = {}) {
     const child = spawn(command, args, {
       cwd: __dirname,
       env: { ...process.env, ...(options.env || {}) },
+      signal: options.signal || isolatedProviderOverrides.getStore()?.signal,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -2566,22 +2607,46 @@ function markVideoJobsStale(topicId, clipIndex, reason) {
 }
 
 async function runVoxcpmJob(job) {
-  await mkdir(path.dirname(job.outputMasterPath || job.outputs?.[0]?.path || AUDIO_DIR), { recursive: true });
-  const jobPath = path.join(TTS_JOB_DIR, `${job.kind || "tts"}-${Date.now()}-${randomUUID()}.json`);
-  await writeFile(jobPath, JSON.stringify(job, null, 2), "utf8");
-  const { stdout } = await runProcess(PYTHON_BIN, [VOXCPM_RUNNER, jobPath], {
-    env: {
-      PYTHONIOENCODING: "utf-8",
-      HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
+  const override = isolatedProviderOverrides.getStore();
+  override?.signal?.throwIfAborted();
+  if (PIPELINE_PROVIDER_WORKER) {
+    for (const input of [job.referenceAudioPath, job.promptWavPath].filter(Boolean)) {
+      const relative = path.relative(realpathSync(DATA_DIR), realpathSync(input));
+      if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("staged_tts_input_path_escape");
     }
-  });
-  try {
-    const lines = stdout.trim().split(/\r?\n/u).filter(Boolean);
-    const jsonLine = [...lines].reverse().find((line) => line.trim().startsWith("{"));
-    return JSON.parse(jsonLine || stdout.trim());
-  } catch {
-    throw new Error(`TTS 결과 JSON을 읽지 못했습니다: ${stdout.slice(0, 500)}`);
+    for (const output of [job.outputMasterPath, ...(job.outputs || []).map(item => item.path)].filter(Boolean)) {
+      const relative = path.relative(DATA_DIR, path.resolve(output));
+      if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("staged_tts_output_path_escape");
+    }
   }
+  if (PIPELINE_PROVIDER_WORKER && process.env.DINOBOX_ISOLATED_MOCK_PROVIDER === "1" && !override?.voxProvider) throw new Error("isolated_vox_fixture_missing");
+  const localTts = PIPELINE_PROVIDER_WORKER && !override?.voxProvider ? durableLocalTtsEnvironment(process.env, __dirname, DATA_DIR) : null;
+  const finish = PIPELINE_PROVIDER_WORKER ? await override.reserveInvocation() : null;
+  let result;
+  try {
+    override?.signal?.throwIfAborted();
+    if (override?.voxProvider) result = await override.voxProvider(job, { signal: override.signal });
+    else {
+      await mkdir(path.dirname(job.outputMasterPath || job.outputs?.[0]?.path || AUDIO_DIR), { recursive: true });
+      const jobPath = path.join(PIPELINE_PROVIDER_WORKER ? path.dirname(DATA_DIR) : TTS_JOB_DIR, `${job.kind || "tts"}-${Date.now()}-${randomUUID()}.json`);
+      await writeFile(jobPath, JSON.stringify(job, null, 2), "utf8");
+      const { stdout } = await runProcess(localTts?.python || PYTHON_BIN, [VOXCPM_RUNNER, jobPath], {
+        env: { PYTHONIOENCODING: "utf-8", HF_HUB_DISABLE_SYMLINKS_WARNING: "1", ...(localTts?.env || {}) }
+      });
+      try {
+        const lines = stdout.trim().split(/\r?\n/u).filter(Boolean);
+        const jsonLine = [...lines].reverse().find((line) => line.trim().startsWith("{"));
+        result = JSON.parse(jsonLine || stdout.trim());
+      } catch {
+        throw new Error(`TTS 결과 JSON을 읽지 못했습니다: ${stdout.slice(0, 500)}`);
+      }
+    }
+  } catch (error) {
+    await finish?.("error");
+    throw error;
+  }
+  await finish?.("completed");
+  return result;
 }
 
 function getGpuStatus() {
@@ -3521,7 +3586,7 @@ const SCRIPT_REVIEW_OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["code", "severity", "segmentIndex", "message", "repairInstruction"],
+        required: ["code", "severity", "segmentIndex", "targetField", "message", "repairInstruction"],
         properties: {
           code: {
             type: "string",
@@ -3533,6 +3598,7 @@ const SCRIPT_REVIEW_OUTPUT_SCHEMA = {
           },
           severity: { type: "string", enum: ["error", "warning"] },
           segmentIndex: { type: "integer", minimum: 0 },
+          targetField: { type: "string", enum: ["narration", "other", "unspecified"] },
           message: { type: "string" },
           repairInstruction: { type: "string" }
         }
@@ -3720,7 +3786,7 @@ const SHOTLIST_REVIEW_OUTPUT_SCHEMA = {
             enum: [
               "unsupported_visual", "repeated_visual_state", "missing_causal_state",
               "impossible_geometry", "family_mismatch", "info_overuse",
-              "weak_video_motion", "insufficient_visual_depth"
+              "weak_video_motion", "insufficient_visual_depth", "narration_expression"
             ]
           },
           severity: { type: "string", enum: ["error", "warning"] },
@@ -3855,29 +3921,46 @@ function inferInvocationTopicId(taskName, control = {}) {
   return Number(String(taskName).match(/-(\d+)(?:-|$)/u)?.[1] || 0) || null;
 }
 
-function startAiInvocation(taskName, model, prompt, outputSchema, control, fallbackCount) {
+async function startAiInvocation(taskName, model, prompt, outputSchema, control, fallbackCount) {
+  if (PIPELINE_PROVIDER_WORKER) {
+    const options = isolatedProviderOverrides.getStore();
+    options.signal.throwIfAborted();
+    return { finish: await options.reserveInvocation({ taskName, model: model || "default", promptHash: buildQualityContractHash(prompt) }) };
+  }
+  const execution = pipelineExecution.getStore();
+  execution?.control.reserveInvocation();
   const result = db.prepare(`
-    INSERT INTO ai_invocations (task, stage, topic_id, job_id, model, prompt_hash, schema_hash, input_hash, status, fallback_count)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)
+    INSERT INTO ai_invocations (task, stage, topic_id, job_id, model, prompt_hash, schema_hash, input_hash, status, fallback_count${DURABLE_PIPELINE_ENABLED ? ", run_id, lease_token" : ""})
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?${DURABLE_PIPELINE_ENABLED ? ", ?, ?" : ""})
   `).run(
     taskName,
-    String(control.stage || taskName.split("-")[0] || "ai"),
-    inferInvocationTopicId(taskName, control),
-    Number(control.jobId) || null,
+    String(control.stage || execution?.job.pipeline_stage || taskName.split("-")[0] || "ai"),
+    execution?.job.topic_id || inferInvocationTopicId(taskName, control),
+    execution?.job.id || Number(control.jobId) || null,
     model || "default",
     buildQualityContractHash(prompt),
     buildQualityContractHash(outputSchema),
     buildQualityContractHash({ prompt, outputSchema }),
-    fallbackCount
+    fallbackCount, ...(DURABLE_PIPELINE_ENABLED ? [execution?.job.run_id || null, execution?.job.lease_token || ""] : [])
   );
   return Number(result.lastInsertRowid);
 }
 
-function finishAiInvocation(id, status, startedAt, error = "") {
+async function finishAiInvocation(id, status, startedAt, error = "") {
+  if (PIPELINE_PROVIDER_WORKER) {
+    if (id.finished) return;
+    id.finished = true;
+    return id.finish(status === "completed" ? "completed" : "error");
+  }
+  const execution = pipelineExecution.getStore();
+  if (execution) {
+    try { execution.control.assertCurrent(); }
+    catch { status = "reconcile_required"; error = "late_provider_result"; }
+  }
   db.prepare(`
     UPDATE ai_invocations
     SET status = ?, completed_at = CURRENT_TIMESTAMP, duration_ms = ?, error = ?
-    WHERE id = ?
+    WHERE id = ? AND status = 'running'
   `).run(status, Date.now() - startedAt, String(error || "").slice(0, 2000), id);
 }
 
@@ -3902,46 +3985,47 @@ async function runCodexJson(prompt, taskName, timeoutMs = 240000, control = {}) 
       .slice(0, CODEX_MODEL_ATTEMPT_LIMIT);
 
     for (const [modelIndex, model] of modelCandidates.entries()) {
+      controller.signal.throwIfAborted();
+      const override = isolatedProviderOverrides.getStore();
+      if (PIPELINE_PROVIDER_WORKER && process.env.DINOBOX_ISOLATED_MOCK_PROVIDER === "1" && !override?.aiProvider) throw new Error("isolated_ai_fixture_missing");
       const invocationStartedAt = Date.now();
-      const invocationId = startAiInvocation(taskName, model, prompt, outputSchema, control, modelIndex);
+      const invocationId = await startAiInvocation(taskName, model, prompt, outputSchema, control, modelIndex);
       try {
-        const thread = codexClient.startThread({
-          model,
-          workingDirectory: __dirname,
-          skipGitRepoCheck: true,
-          sandboxMode: "read-only",
-          approvalPolicy: "never",
-          networkAccessEnabled: false
-        });
-        const { events } = await thread.runStreamed(prompt, { outputSchema, signal: controller.signal });
+        controller.signal.throwIfAborted();
         let finalResponse = "";
-
-        for await (const event of events) {
-          control.onEvent?.(event);
-          if (event.type === "item.completed" && event.item.type === "agent_message") {
-            finalResponse = event.item.text;
-          }
-          if (event.type === "turn.failed") {
-            throw new Error(event.error?.message || "Codex 작업이 실패했습니다.");
-          }
-          if (event.type === "error") {
-            throw new Error(event.message || "Codex 스트림 오류가 발생했습니다.");
+        if (override?.aiProvider) {
+          finalResponse = JSON.stringify(await override.aiProvider({ prompt, taskName, outputSchema, model, signal: controller.signal }));
+        } else {
+          const thread = codexClient.startThread({
+            model,
+            workingDirectory: PIPELINE_PROVIDER_WORKER ? DATA_DIR : __dirname,
+            skipGitRepoCheck: true,
+            sandboxMode: "read-only",
+            approvalPolicy: "never",
+            networkAccessEnabled: false
+          });
+          const input = control.imagePaths?.length
+            ? [{ type: 'text', text: prompt }, ...control.imagePaths.map(imagePath => ({ type: 'local_image', path: path.resolve(imagePath) }))]
+            : prompt;
+          const { events } = await thread.runStreamed(input, { outputSchema, signal: controller.signal });
+          for await (const event of events) {
+            control.onEvent?.(event);
+            if (event.type === "item.completed" && event.item.type === "agent_message") finalResponse = event.item.text;
+            if (event.type === "turn.failed") throw new Error(event.error?.message || "Codex 작업이 실패했습니다.");
+            if (event.type === "error") throw new Error(event.message || "Codex 스트림 오류가 발생했습니다.");
           }
         }
-
-        if (!finalResponse) {
-          throw new Error("Codex가 최종 JSON 응답을 반환하지 않았습니다.");
-        }
+        if (!finalResponse) throw new Error("Codex가 최종 JSON 응답을 반환하지 않았습니다.");
         const parsed = parseJsonFromText(finalResponse);
-        finishAiInvocation(invocationId, "completed", invocationStartedAt);
+        await finishAiInvocation(invocationId, "completed", invocationStartedAt);
         Object.defineProperties(parsed, {
-          __aiInvocationId: { value: invocationId, enumerable: false },
+          __aiInvocationId: { value: PIPELINE_PROVIDER_WORKER ? null : invocationId, enumerable: false },
           __aiModel: { value: model || "default", enumerable: false }
         });
         return parsed;
       } catch (error) {
         const message = String(error.message || error);
-        finishAiInvocation(invocationId, "failed", invocationStartedAt, message);
+        await finishAiInvocation(invocationId, "failed", invocationStartedAt, message);
         const retryable = /capacity|overloaded|temporarily unavailable|rate limit|stream disconnected before completion/iu.test(message);
         const hasFallback = modelIndex < modelCandidates.length - 1;
         if (!retryable || !hasFallback || controller.signal.aborted) throw error;
@@ -3976,6 +4060,7 @@ function mapJobRow(row) {
   return {
     id: Number(row.id),
     type: row.type,
+    runId: row.run_id || null,
     topicId: row.topic_id == null ? null : Number(row.topic_id),
     status: row.status,
     progress: Number(row.progress || 0),
@@ -4054,6 +4139,27 @@ function enqueueAiJob(type, topicId, payload = {}) {
     }
   }
 
+  if (payload.autoConverge === true || payload.pipeline?.runId) {
+    if (!pipelineStore) throw new Error("durable_pipeline_disabled");
+    return pipelineStore.transaction(() => {
+      const stage = ({ script_generate: "script", tts_generate: "tts", shotlist_generate: "shotlist", clean_image_generate: "clean", info_image_generate: "info" })[type];
+      if (!stage) throw new Error("지원하지 않는 durable pipeline 단계입니다.");
+      const requestKey = String(payload.requestKey || `auto:${topicId}:${type}`);
+      const inputHash = pipelineInputRevision(Number(topicId), stage);
+      const run = payload.pipeline?.runId
+        ? pipelineStore.getRun(payload.pipeline.runId)
+        : db.prepare("SELECT * FROM pipeline_runs WHERE request_key = ?").get(requestKey)
+          || pipelineStore.createRun({ topicId: Number(topicId), lane: topic.runLane === "production_canary" ? "production_canary" : "manual", requestKey, inputHash });
+      if (!run || run.topic_id !== Number(topicId)) throw new Error("pipeline run 주제가 일치하지 않습니다.");
+      const existing = pipelineStore.jobs(run.id).find((row) => row.pipeline_stage === stage && row.scope_key === String(payload.clipIndex || "batch") && row.operation_kind === "generate" && row.input_revision === inputHash);
+      if (existing) return { job: mapJobRow(existing), reused: true, runId: run.id };
+      const row = pipelineStore.enqueue(run.id, { type, stage, scope: String(payload.clipIndex || "batch"), inputHash,
+        payload: { ...payload, inputSnapshot: pipelineInputSnapshot(Number(topicId), stage) } });
+      scheduleAiWorkers();
+      return { job: mapJobRow(row), reused: false, runId: run.id };
+    });
+  }
+
   const activeRows = db.prepare(`
     SELECT * FROM jobs
     WHERE type = ? AND topic_id = ? AND status IN ('queued', 'running')
@@ -4063,7 +4169,8 @@ function enqueueAiJob(type, topicId, payload = {}) {
   const active = pipeline
     ? activeRows.find((row) => {
       const queued = parseStoredJson(row.payload_json, {}).pipeline || {};
-      return queued.stage === pipeline.stage && queued.inputHash === pipeline.inputHash;
+      return queued.stage === pipeline.stage && queued.inputHash === pipeline.inputHash
+        && Number(parseStoredJson(row.payload_json, {}).clipIndex || 0) === Number(payload.clipIndex || 0);
     })
     : ["clean_image_generate", "quality_replay"].includes(type)
       ? activeRows.find((row) => Number(parseStoredJson(row.payload_json, {}).clipIndex) === Number(payload.clipIndex))
@@ -4083,70 +4190,535 @@ function enqueueAiJob(type, topicId, payload = {}) {
   return { job: mapJobRow(db.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId)), reused: false };
 }
 
+async function requestDurableCleanRepair(payload) {
+  if (!pipelineStore) throw new Error('durable_pipeline_disabled');
+  const keys = ['runId','clipIndex','requestKey','beforeHash','inputRevision','panelCrop'];
+  if (!payload || Object.keys(payload).some(key => !keys.includes(key)) || keys.some(key => payload[key] == null)
+    || !Number.isSafeInteger(payload.clipIndex) || payload.clipIndex < 1 || typeof payload.requestKey !== 'string' || !payload.requestKey || payload.requestKey.length > 160) throw new Error('invalid_clean_repair_request');
+  const run = pipelineStore.getRun(payload.runId);
+  if (!run || run.lane !== 'production_canary') throw new Error('clean_repair_requires_canary_run');
+  const existing = pipelineStore.cleanRepairs(run.id).find(row => row.request_key === payload.requestKey);
+  if (existing) {
+    const contract = parseStoredJson(existing.contract_json, {});
+    if (existing.clip_key !== String(payload.clipIndex) || existing.before_hash !== payload.beforeHash
+      || contract.originalInputRevision !== payload.inputRevision || JSON.stringify(contract.panelCrop) !== JSON.stringify(payload.panelCrop)) throw new Error('repair_request_key_conflict');
+    return { runId: run.id, repairId: existing.id, reused: true, job: pipelineStore.jobs(run.id).find(job => parseStoredJson(job.payload_json, {}).cleanRepairId === existing.id && job.pipeline_stage === 'clean') };
+  }
+  const detail = getTopicDetailById(run.topic_id), item = detail.shotlist?.items.find(row => row.sortIndex === payload.clipIndex);
+  if (!item || detail.shotlist.status !== 'approved' || detail.shotlist.items.some(row => row.referencePolicy !== 'none')) throw new Error('clean_repair_independent_scene_required');
+  const assertBefore = () => {
+    const status = pipelineTopicStatus(run.topic_id);
+    if (status.run?.id !== run.id || status.execution !== 'awaiting_user_review' || status.inputFreshness !== 'current' || status.quality !== 'pass'
+      || pipelineInputRevision(run.topic_id, 'clean') !== payload.inputRevision) throw new Error('clean_repair_before_revision_changed');
+    const targets = status.evidence.filter(row => row.clipKey === String(payload.clipIndex));
+    if (targets.length !== 2 || targets.some(row => row.userApproval === 'approved')) throw new Error('clean_repair_approved_asset_requires_explicit_review_change');
+    const before = pipelineStore.activeArtifacts(run.id).find(row => row.kind === 'clean' && row.clip_key === String(payload.clipIndex));
+    if (!before || before.content_hash !== payload.beforeHash) throw new Error('clean_repair_before_hash_mismatch');
+    if (pipelineStore.activeArtifacts(run.id).some(row => parseStoredJson(row.metadata_json, {})[row.kind === 'clean' ? 'cleanClipBinding' : 'infoClipBinding']?.version !== 1)) throw new Error('clean_repair_legacy_binding_requires_reconciliation');
+    return before;
+  };
+  const before = assertBefore();
+  const resolved = await resolveOfficialCleanInputs(detail.topic, item, detail.factCheck, detail.productionBrief, { cachedOnly: true });
+  const panelCrop = normalizeNormalizedBounds(payload.panelCrop);
+  const originalPanel = resolved.crop.panelCrop || resolved.crop.focusBounds || [0,0,1,1];
+  if (!panelCrop || !resolved.direct || resolved.crop.panelSequence || !resolved.boundRequired
+    || panelCrop[0] < originalPanel[0] || panelCrop[1] < originalPanel[1]
+    || panelCrop[0]+panelCrop[2] > originalPanel[0]+originalPanel[2]+1e-9
+    || panelCrop[1]+panelCrop[3] > originalPanel[1]+originalPanel[3]+1e-9
+    || JSON.stringify(panelCrop) === JSON.stringify(originalPanel)) throw new Error('clean_repair_verified_subcrop_required');
+  const crop = { ...resolved.crop, panelCrop };
+  const geometry = await validateOfficialCropFeasibility({ checks: [{ stateId: item.visualStateId, sourcePath: resolved.sourcePath, crop }], python: PDF_PYTHON_BIN, renderer: OFFICIAL_PHOTO_CLEAN_RUNNER, runProcess });
+  if (!geometry.passed) throw new Error(`clean_repair_geometry_hold:${JSON.stringify(geometry.issues)}`);
+  return pipelineStore.transaction(() => {
+    assertBefore();
+    const beforeInfo = pipelineStore.activeArtifacts(run.id).find(row => row.kind === 'info' && row.clip_key === String(payload.clipIndex));
+    const { repair } = pipelineStore.requestCleanRepair(run.id, { clipKey: payload.clipIndex, requestKey: payload.requestKey,
+      beforeArtifactId: before.id, beforeHash: payload.beforeHash,
+      contract: { shotlistId: detail.shotlist.id, originalInputRevision: payload.inputRevision, panelCrop,
+        requiredBounds: resolved.boundRequired.bounds, referenceId: resolved.evidence.id, referenceContentHash: resolved.boundRequired.sha256, beforeInfoArtifactId: beforeInfo.id } });
+    const snapshot = pipelineInputSnapshot(run.topic_id, 'clean');
+    const job = pipelineStore.enqueue(run.id, { type:'clean_image_generate', stage:'clean', scope:String(payload.clipIndex), operation:'explicit_clean_repair', inputHash:hashPipelineInputSnapshot(snapshot),
+      payload:{ source:'explicit_user_clean_repair', cleanRepairId:repair.id, inputSnapshot:snapshot } });
+    return { runId:run.id,repairId:repair.id,reused:false,job };
+  });
+}
+
+function currentCleanRepairContracts(topicId) {
+  if (!pipelineStore) return {};
+  const run = db.prepare('SELECT id FROM pipeline_runs WHERE topic_id=? ORDER BY rowid DESC LIMIT 1').get(topicId);
+  return Object.fromEntries((run ? pipelineStore.cleanRepairs(run.id) : []).map(row => [row.clip_key, { repairId: row.id, ...parseStoredJson(row.contract_json, {}) }]));
+}
+
+function pipelineInputSnapshot(topicId, stage) {
+  const detail = getTopicDetailById(topicId);
+  // A timing-stale shotlist retains its visual source contract, but not readiness.
+  const latest = mapShotlistRow(getLatestShotlistByTopicStatement.get(topicId));
+  if (!detail.shotlist && latest?.raw?.timingRevision?.shotlist === "stale") detail.shotlist = latest;
+  return buildPipelineInputSnapshot({ topicId, stage, fact: detail.factCheck, brief: detail.productionBrief,
+    script: detail.script, tts: mapTtsRunRow(getLatestTtsRunByTopicStatement.get(topicId)), shotlist: detail.shotlist,
+    cleanCorrections: ["clean", "info"].includes(stage) ? currentCleanRepairContracts(topicId) : undefined,
+    visualReferences: ["clean", "info"].includes(stage) ? getCanaryAssets(topicId).map(asset => ({ ...asset,
+      actualSourceHash: asset.verification?.contentBinding?.sourcePath && existsSync(path.resolve(__dirname, asset.verification.contentBinding.sourcePath))
+        ? createHash("sha256").update(readFileSync(path.resolve(__dirname, asset.verification.contentBinding.sourcePath))).digest("hex") : null,
+      actualContentHash: asset.cachedPath && existsSync(path.resolve(__dirname, asset.cachedPath))
+        ? createHash("sha256").update(readFileSync(path.resolve(__dirname, asset.cachedPath))).digest("hex") : null })) : undefined,
+    cleanHashes: stage === "info" ? (detail.shotlist?.items || []).map(item => {
+      const file = path.join(PROJECTS_DIR, `topic-${topicId}`, "clean", `${item.fileStub}_CLEAN.png`);
+      return existsSync(file) ? createHash("sha256").update(readFileSync(file)).digest("hex") : null;
+    }) : [] });
+}
+
+function pipelineInputRevision(topicId, stage) {
+  return hashPipelineInputSnapshot(pipelineInputSnapshot(topicId, stage));
+}
+
+// Read-only dashboard projection: ledger execution never implies quality or approval.
+function pipelineTopicBlocker(topicId) {
+  const run = db.prepare("SELECT * FROM pipeline_runs WHERE topic_id=? AND status IN ('queued','running','awaiting_user_review') ORDER BY rowid DESC LIMIT 1").get(topicId);
+  const batch = db.prepare("SELECT b.* FROM pipeline_batches b, json_each(b.candidates_json) c WHERE json_extract(c.value,'$.topicId')=? AND b.status IN ('queued','running','awaiting_user_review') ORDER BY b.rowid DESC LIMIT 1").get(topicId);
+  return { run: run || null, batch: batch || null };
+}
+
+function pipelineTopicStatus(topicId) {
+  const blocker = pipelineTopicBlocker(topicId);
+  const run = blocker.run || db.prepare('SELECT * FROM pipeline_runs WHERE topic_id=? ORDER BY rowid DESC LIMIT 1').get(topicId) || null;
+  const batch = blocker.batch || db.prepare("SELECT b.* FROM pipeline_batches b, json_each(b.candidates_json) c WHERE json_extract(c.value,'$.topicId')=? ORDER BY b.rowid DESC LIMIT 1").get(topicId) || null;
+  const jobs = run ? pipelineStore.jobs(run.id) : [];
+  const artifacts = run ? pipelineStore.activeArtifacts(run.id) : [];
+  const revisions = {};
+  const currentRevision = stage => revisions[stage] ??= pipelineInputRevision(topicId, stage);
+  const evidence = artifacts.map(row => {
+    const metadata = parseStoredJson(row.metadata_json, {});
+    let bytesCurrent = false;
+    try {
+      bytesCurrent = row.content_hash === createHash('sha256').update(readFileSync(row.path)).digest('hex')
+        && row.content_hash === createHash('sha256').update(readFileSync(path.resolve(__dirname, metadata.sourcePath || row.path))).digest('hex');
+    } catch { /* Missing files are stale, never a quality pass. */ }
+    const source = path.resolve(__dirname, metadata.sourcePath || row.path);
+    const qc = readAssetQc(source);
+    let published = false;
+    try {
+      const manifest = JSON.parse(readFileSync(path.join(path.dirname(row.path), 'manifest.json'), 'utf8'));
+      published = manifest.runId === row.run_id && manifest.jobId === row.job_id
+        && !!db.prepare("SELECT 1 FROM pipeline_attempts WHERE run_id=? AND job_id=? AND lease_token=? AND status='succeeded'").get(row.run_id, row.job_id, manifest.leaseToken)
+        && JSON.stringify(manifest.artifacts.find(entry => entry.path === row.path)) === JSON.stringify(metadata);
+    }
+    catch { /* An absent publication is not quality evidence. */ }
+    // Every current artifact needs its original completed job, including same-revision results.
+    const origin = jobs.find(job => job.id === row.job_id && job.run_id === row.run_id && job.topic_id === topicId
+      && job.pipeline_stage === row.kind && job.status === 'completed' && job.input_revision === row.input_hash);
+    const originalSnapshot = parseStoredJson(origin?.payload_json, {}).inputSnapshot;
+    let visualCurrent = false;
+    try {
+      visualCurrent = published && originalSnapshot?.topicId === topicId && originalSnapshot?.stage === row.kind
+        && hashPipelineInputSnapshot(originalSnapshot) === row.input_hash && metadata.visualBinding?.version === 1
+        && metadata.visualBinding.fingerprint === hashPipelineVisualSnapshot(originalSnapshot)
+        && (metadata.visualBinding.fingerprint === hashPipelineVisualSnapshot(pipelineInputSnapshot(topicId, row.kind))
+          || row.kind === 'info' && metadata.infoClipBinding?.version === 1
+            && metadata.infoClipBinding.clipKey === row.clip_key
+            && metadata.infoClipBinding.fingerprint === hashPipelineInfoClipSnapshot(originalSnapshot, row.clip_key)
+            && metadata.infoClipBinding.fingerprint === hashPipelineInfoClipSnapshot(pipelineInputSnapshot(topicId, row.kind), row.clip_key)
+          || row.kind === 'clean' && metadata.cleanClipBinding?.version === 1
+            && metadata.cleanClipBinding.clipKey === row.clip_key
+            && metadata.cleanClipBinding.fingerprint === hashPipelineCleanClipSnapshot(originalSnapshot, row.clip_key)
+            && metadata.cleanClipBinding.fingerprint === hashPipelineCleanClipSnapshot(pipelineInputSnapshot(topicId, row.kind), row.clip_key));
+    } catch { /* Missing/invalid original snapshots require explicit reconciliation. */ }
+    let originValid = false;
+    try { originValid = !!origin && originalSnapshot?.topicId === topicId && originalSnapshot?.stage === row.kind && hashPipelineInputSnapshot(originalSnapshot) === row.input_hash; }
+    catch { /* Invalid original snapshots never acquire current status. */ }
+    const current = published && originValid && (row.input_hash === currentRevision(row.kind) || visualCurrent) && bytesCurrent && row.freshness === 'current';
+    const independent = qc.independentSemantic?.passed;
+    const semanticPassed = independent !== false && (independent === true || row.kind === 'info' && qc.semantic?.passed === true);
+    const quality = row.quality === 'pass' && published && qc.passed === true && semanticPassed ? 'pass'
+      : row.quality === 'fail' || qc.passed === false || independent === false ? 'not_passed' : 'unknown';
+    const review = db.prepare('SELECT * FROM asset_reviews WHERE topic_id=? AND asset_type=? AND clip_index=? ORDER BY id DESC LIMIT 1').get(topicId, row.kind, Number(row.clip_key));
+    const provenance = parseStoredJson(review?.auto_qc_json, {}).manualProvenance;
+    const approved = current && review?.status === 'OK' && provenance?.assetHashAfter === row.content_hash
+      && path.resolve(__dirname, review.asset_path) === source;
+    return { id: row.id, kind: row.kind, clipKey: row.clip_key, quality, freshness: current ? 'current' : 'stale', userApproval: approved ? 'approved' : 'pending' };
+  });
+  const latestJob = jobs.filter(job => job.pipeline_stage !== 'continue').at(-1);
+  const stage = latestJob?.pipeline_stage || 'script';
+  const jobFreshness = run ? (latestJob?.input_revision || run.input_hash) === currentRevision(stage) ? 'current' : 'stale' : 'unknown';
+  const expectedItems = mapShotlistRow(getLatestShotlistByTopicStatement.get(topicId))?.items || [];
+  const complete = expectedItems.length > 0 && ['clean', 'info'].every(kind => expectedItems.every(item =>
+    evidence.some(row => row.kind === kind && row.clipKey === String(item.sortIndex))));
+  const unfinishedJobs = jobs.filter(job => ['queued', 'running'].includes(job.status));
+  const unfinishedStale = unfinishedJobs.some(job => {
+    const stage = job.pipeline_stage === 'continue' ? parseStoredJson(job.payload_json, {}).previousStage || 'script' : job.pipeline_stage;
+    return job.input_revision !== currentRevision(stage);
+  });
+  // A complete verified reuse set supersedes historical generation hashes, never live lease guards.
+  const inputFreshness = evidence.some(row => row.freshness === 'stale') || unfinishedStale ? 'stale'
+    : complete && !unfinishedJobs.length ? 'current' : jobFreshness;
+  const quality = evidence.some(row => !['pass', 'unknown'].includes(row.quality)) ? 'not_passed'
+    : complete && evidence.every(row => row.quality === 'pass' && row.freshness === 'current') ? 'pass' : 'unknown';
+  const userApproval = complete && evidence.every(row => row.userApproval === 'approved') ? 'approved' : 'pending';
+  const execution = blocker.batch?.status || run?.status || batch?.status || 'not_started';
+  const reason = blocker.batch?.terminal_reason || run?.terminal_reason || batch?.terminal_reason || '';
+  const approvalRecorded = inputFreshness === 'current' && userApproval === 'approved';
+  const owner = ['queued', 'running'].includes(execution) ? 'worker' : execution === 'awaiting_user_review' && !approvalRecorded ? 'user' : 'operator';
+  const action = execution === 'awaiting_user_review' && approvalRecorded ? '최종 승인 기록됨. 영상은 별도 승인 작업이며 자동 실행하지 않습니다.'
+    : execution === 'awaiting_user_review' ? '기존 CLEAN / INFO 검수 화면에서 최종 승인하세요. 기계 PASS는 사용자 승인이 아닙니다.'
+    : /budget/.test(reason) ? '공유 호출·시도·기한 예산을 검토하세요. 자동 재개는 지원하지 않습니다.'
+    : /revision|stale/.test(reason) ? '변경된 입력과 산출물을 검토하세요. 기존 실행 재개 없이 새 실행을 명시적으로 시작합니다.'
+    : /reference|evidence/.test(reason) ? '참조 자료를 보강한 뒤 새 실행을 명시적으로 시작하세요.'
+    : /provider|adapter/.test(reason) ? '운영자가 provider 설정과 로그를 확인해야 합니다. 자동 재개하지 않습니다.'
+    : ['queued', 'running'].includes(execution) ? '작업 진행을 기다리거나 실행 범위를 취소하세요.'
+    : '원인과 입력을 확인한 뒤 새 실행을 명시적으로 시작하세요. 기존 실행 재개는 지원하지 않습니다.';
+  const budget = row => row ? { callsUsed: row.invocations_used, callsLimit: row.max_invocations, attemptsUsed: row.attempts_used, attemptsLimit: row.max_attempts, deadlineMs: row.deadline_ms } : null;
+  return { enabled: true, topicId, run, batch, batchRuns: batch ? pipelineStore.batchRuns(batch.id) : [],
+    execution, quality, inputFreshness,
+    userApproval, nextAction: { owner, message: action, reason }, budgets: { run: budget(run), batch: budget(batch) },
+    canStart: !blocker.run && !blocker.batch, cancelScope: blocker.batch ? { type: 'batch', id: blocker.batch.id }
+      : blocker.run ? { type: 'run', id: blocker.run.id } : null, evidence };
+}
+
+// Local timing-metadata correction, not a narration or audio-generation adapter.
+// In-place scene identity is deliberate: a regenerated/reordered shotlist is not
+// assumed equivalent. Multi-shot segments require a separate alignment review.
+async function revisePipelineTiming({ topicId, expectedTtsRevision, durations, outputPath }) {
+  topicId = Number(topicId);
+  if (!pipelineStore || !topicId || pipelineInputRevision(topicId, "shotlist") !== expectedTtsRevision) throw new Error("timing_revision_conflict");
+  const tts = mapTtsRunRow(getLatestTtsRunByTopicStatement.get(topicId));
+  const shotlist = mapShotlistRow(getLatestShotlistByTopicStatement.get(topicId));
+  if (tts?.status !== "generated" || !shotlist || shotlist.ttsRunId !== tts.id
+    || !Array.isArray(durations) || durations.length !== tts.segments.length
+    || durations.some(value => !Number.isFinite(value) || value <= 0 || value > NATIVE_CLIP_DURATION_SEC)
+    || shotlist.items.length !== durations.length
+    || shotlist.items.some((item, index) => item.sourceSegmentIndex !== tts.segments[index].segmentIndex || item.sourceSegmentOrder !== 1)) throw new Error("timing_alignment_review_required");
+  const master = resolveWorkspacePath(outputPath || tts.outputPath);
+  const relative = path.relative(DATA_DIR, master);
+  if (relative.startsWith("..") || path.isAbsolute(relative) || !existsSync(master) || readFileSync(master).length === 0) throw new Error("timing_master_path_invalid");
+  const measured = tts.segments.map((segment, index) => {
+    const file = resolveWorkspacePath(segment.audioPath);
+    const relativeSegment = path.relative(DATA_DIR, file);
+    if (relativeSegment.startsWith("..") || path.isAbsolute(relativeSegment)) throw new Error("timing_segment_path_invalid");
+    const pcm = readPcmWav(file);
+    if (Math.abs(pcm.durationSec - durations[index]) > 0.000001) throw new Error("timing_measurement_mismatch");
+    return pcm;
+  });
+  const masterPcm = readPcmWav(master);
+  if (measured.some(pcm => !pcm.format.equals(masterPcm.format))
+    || !Buffer.concat(measured.map(pcm => pcm.data)).equals(masterPcm.data)) throw new Error("timing_master_alignment_review_required");
+  const before = Object.fromEntries(["clean", "info"].map(kind => [kind, hashPipelineVisualSnapshot(pipelineInputSnapshot(topicId, kind))]));
+  const result = pipelineStore.transaction(() => {
+    let start = 0;
+    for (const [index, duration] of durations.entries()) {
+      db.prepare("UPDATE tts_segments SET duration_sec = ?, planned_time = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .run(duration, `${start}-${start + duration}`, tts.segments[index].id);
+      db.prepare("UPDATE shotlist_items SET start_sec = ?, end_sec = ?, duration_sec = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .run(start, start + duration, duration, shotlist.items[index].id);
+      start += duration;
+    }
+    db.prepare("UPDATE tts_runs SET total_duration_sec = ?, output_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .run(start, toRelativeWorkspacePath(master), tts.id);
+    const timingRevision = pipelineInputRevision(topicId, "shotlist");
+    const raw = { ...shotlist.raw, timingRevision: { version: 1, previous: expectedTtsRevision, current: timingRevision,
+      shotlist: "stale", captions: "stale", edit: "stale" } };
+    db.prepare("UPDATE shotlists SET total_duration_sec = ?, status = 'stale', raw_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .run(start, JSON.stringify(raw), shotlist.id);
+    for (const kind of ["clean", "info"]) if (before[kind] !== hashPipelineVisualSnapshot(pipelineInputSnapshot(topicId, kind))) throw new Error("timing_visual_contract_changed");
+    return { topicId, timingRevision, invalidated: ["shotlist_timing", "captions", "edit"], visualFingerprints: before };
+  });
+  // DB is already fail-closed (stale) if filesystem publication fails.
+  const detail = getTopicDetailById(topicId);
+  const currentTts = mapTtsRunRow(getLatestTtsRunByTopicStatement.get(topicId));
+  if (shotlist.manifestPath) await writeFile(resolveWorkspacePath(shotlist.manifestPath),
+    `<!-- timing revision ${result.timingRevision}; shotlist/captions/edit approval stale -->\n` + renderImageSequenceMarkdown({
+      topic: detail.topic, script: detail.script, ttsRun: currentTts, shotlistId: shotlist.id,
+      items: mapShotlistRow(getLatestShotlistByTopicStatement.get(topicId)).items, manifestPath: shotlist.manifestPath }), "utf8");
+  return result;
+}
+
+async function getPipelineVisualReuseState(runId, suppliedAssets) {
+  const run = pipelineStore.getRun(runId);
+  if (!run) throw new Error("pipeline_run_not_found");
+  const assets = suppliedAssets || await listProjectAssetsForTopic(run.topic_id);
+  const records = pipelineStore.activeArtifacts(runId);
+  const state = {};
+  const verified = pipelineTopicStatus(run.topic_id);
+  for (const kind of ["clean", "info"]) {
+    const matching = records.filter(row => verified.run?.id === runId && row.kind === kind
+      && parseStoredJson(row.metadata_json, {}).visualBinding?.version === 1
+      && verified.evidence.some(entry => entry.id === row.id && entry.quality === 'pass' && entry.freshness === 'current'));
+    state[kind] = assets.expectedCount > 0 && assets[kind].length === assets.expectedCount && assets[kind].every(asset =>
+      isPipelineAssetReady(asset, run.lane) && matching.some(row => {
+        const metadata = parseStoredJson(row.metadata_json, {});
+        const source = path.resolve(__dirname, asset.path);
+        const qc = readAssetQc(source);
+        let published;
+        try { published = JSON.parse(readFileSync(path.join(path.dirname(row.path), "manifest.json"), "utf8")).artifacts.find(entry => entry.path === row.path); }
+        catch { return false; }
+        return JSON.stringify(published) === JSON.stringify(metadata)
+          && qc.passed === true && (qc.independentSemantic?.passed === true || qc.semantic?.passed === true)
+          && (asset.status !== "OK" || asset.autoQc?.manualProvenance?.assetHashAfter === row.content_hash)
+          && path.resolve(metadata.sourcePath || row.path) === source && existsSync(row.path) && existsSync(source)
+          && (!metadata.requiredOverlay || Boolean(metadata.overlayType && metadata.overlayType !== "none"))
+          && row.content_hash === createHash("sha256").update(readFileSync(row.path)).digest("hex")
+          && row.content_hash === createHash("sha256").update(readFileSync(source)).digest("hex");
+      }));
+  }
+  return state;
+}
+
+function assertDurableArtifactReusable(file, kind, clip) {
+  const isolated = isolatedProviderOverrides.getStore();
+  const execution = pipelineExecution.getStore() || (isolated?.job ? { job: isolated.job, control: { assertCurrent: () => isolated.signal.throwIfAborted() } } : null);
+  if (!execution) return;
+  execution.control.assertCurrent();
+  const match = pipelineStore.activeArtifacts(execution.job.run_id).find(row => row.kind === kind && row.clip_key === String(clip)
+    && row.input_hash === execution.job.input_revision && row.content_hash === createHash("sha256").update(readFileSync(file)).digest("hex"));
+  if (!match) throw new Error("artifact_revision_unbound_reconcile_required");
+}
+
+function enqueueBatchCandidate(batchId) {
+  const run = pipelineStore.startNextCandidate(batchId);
+  if (run) pipelineStore.enqueue(run.id, { stage: "continue", type: "pipeline_continue", scope: "initial", operation: "advance", inputHash: run.input_hash });
+  return run;
+}
+
+async function batchFeasibilityOutcome(job) {
+  const run = pipelineStore.getRun(job.run_id);
+  if (!run.batch_id) {
+    const result = await preflightOfficialCleanGeometry(getTopicDetailById(run.topic_id));
+    return result.passed ? null : { status: "blocked", reason: result.reason, result: { feasibility: result } };
+  }
+  const batch = pipelineStore.getBatch(run.batch_id);
+  const candidate = JSON.parse(batch.candidates_json).find(entry => entry.topicId === run.topic_id);
+  if (!candidate || candidate.inputHash !== run.input_hash || pipelineInputRevision(run.topic_id, "script") !== run.input_hash) throw new Error("input_revision_changed");
+  const detail = getTopicDetailById(run.topic_id);
+  if (detail.productionBrief && detail.productionBrief.raw?.contractVersion !== PRODUCTION_BRIEF_CONTRACT_VERSION) return { status: "blocked", reason: "production_brief_contract_stale" };
+  const requirements = getConfiguredProductionRequirements(detail.topic);
+  if (candidate.startContract.requiredVisualStates < (requirements.minimumVisualStates || 1)
+    || candidate.startContract.minimumRequiredInfoOverlays < (requirements.minimumRequiredInfoOverlays || 0)) throw new Error("batch_start_contract_weakens_topic_policy");
+  let result = validatePipelineFeasibility({ detail, assets: getCanaryAssets(run.topic_id), startContract: candidate.startContract,
+    workspaceRoot: __dirname, dataRoot: DATA_DIR, allowedHostSuffixes: run.lane === "production_canary" ? OFFICIAL_CANARY_HOST_SUFFIXES : [] });
+  if (result.passed) result = await preflightOfficialCleanGeometry(detail);
+  if (result.passed) return null;
+  if (result.reason !== "needs_reference") return { status: "blocked", reason: result.reason, result: { feasibility: result } };
+  // Completion, failure history and next candidate allocation commit together.
+  return { result: { feasibility: result }, beforeCommit() {
+    pipelineStore.rejectCandidate(run.id);
+    recordTopicAttempt(run.topic_id, "pipeline_feasibility", "needs_reference", "Stored references cannot satisfy the bound production contract.", { batchId: batch.id, runId: run.id, inputHash: run.input_hash, issues: result.issues });
+    enqueueBatchCandidate(batch.id);
+  } };
+}
+
+async function durablePipelineContinuation(job) {
+  const run = pipelineStore.getRun(job.run_id);
+  let detail = getTopicDetailById(job.topic_id);
+  const previousStage = job.payload.previousStage;
+  if (job.payload.cleanRepairId) {
+    const repair = pipelineStore.cleanRepairs(run.id).find(row => row.id === job.payload.cleanRepairId);
+    if (!repair) throw new Error('clean_repair_request_missing');
+    if (previousStage === 'clean') {
+      const state = pipelineTopicStatus(job.topic_id);
+      if (!state.evidence.some(row => row.kind === 'clean' && row.clipKey === repair.clip_key && row.freshness === 'current' && row.quality === 'pass')) throw new Error('clean_repair_not_published');
+      const snapshot = pipelineInputSnapshot(job.topic_id, 'info');
+      return { successors:[{type:'info_image_generate',stage:'info',scope:repair.clip_key,operation:'clean_repair_info',inputHash:hashPipelineInputSnapshot(snapshot),
+        payload:{cleanRepairId:repair.id,clipIndexes:[Number(repair.clip_key)],scope:'sample',force:true,inputSnapshot:snapshot}}] };
+    }
+    if (previousStage !== 'info') throw new Error('clean_repair_invalid_transition');
+    const current = await getPipelineVisualReuseState(run.id);
+    if (!current.clean || !current.info) throw new Error('clean_repair_results_not_current');
+    return {status:'awaiting_user_review',reason:'clean_info_qc_passed_user_review_pending'};
+  }
+  if (!previousStage) {
+    const feasibility = await batchFeasibilityOutcome(job);
+    if (feasibility) return feasibility;
+    // The explicit batch start contract never reuses an old generated script.
+    if (run.batch_id && detail.script) return { status: "blocked", reason: "batch_start_requires_ungenerated_script" };
+  }
+  if (run.lane === "production_canary" && previousStage === "script" && detail.script?.status === "draft" && !canaryHasAiPass(detail.topic)) {
+    recordCanaryAiPass({ topicId: job.topic_id, reviewer: "pipeline_auto_converge" });
+    detail = getTopicDetailById(job.topic_id);
+  }
+  if (run.lane === "production_canary" && previousStage === "shotlist" && detail.shotlist?.status !== "approved") {
+    if (detail.shotlist?.raw?.qualityStatus !== "passed") return { status: "blocked", reason: "shotlist_quality_not_passed" };
+    return { status: "blocked", reason: "durable_shotlist_review_adapter_not_staged" };
+  }
+  const assets = await listProjectAssetsForTopic(job.topic_id);
+  const visualState = await getPipelineVisualReuseState(run.id, assets);
+  const current = kind => visualState[kind];
+  const next = getNextPipelineJob({
+    scriptReady: Boolean(detail.script && (detail.script.status === "approved" || (run.lane === "production_canary" && detail.script.status === "draft" && canaryHasAiPass(detail.topic)))),
+    ttsMeasured: Boolean(assets.ttsRun?.status === "generated" && assets.ttsRun.totalDurationSec > 0),
+    shotlistReady: assets.shotlistApproved, cleanReady: current("clean"), infoReady: !assets.infoPlanStale && current("info")
+  });
+  if (next.terminal) return { status: "awaiting_user_review", reason: "clean_info_qc_passed_user_review_pending" };
+  const remaining = pipelineStore.jobs(run.id).some(row => row.id !== job.id && row.pipeline_stage === next.stage && ["queued", "running"].includes(row.status));
+  if (remaining) return { result: { waiting: next.stage } };
+  const stageOrder = ["script", "tts", "shotlist", "clean", "info"];
+  if (previousStage && stageOrder.indexOf(next.stage) <= stageOrder.indexOf(previousStage)) {
+    return { status: run.lane === "manual" ? "awaiting_user_review" : "blocked", reason: `${next.stage}_quality_or_approval_unresolved` };
+  }
+  if (run.lane === "manual" && next.stage === "clean" && assets.representativeGate?.enabled && !assets.representativeGate.imageProductionUnlocked) {
+    return { status: "awaiting_user_review", reason: "representative_images_require_user_approval" };
+  }
+  const inputHash = pipelineInputRevision(job.topic_id, next.stage);
+  const scopes = next.stage === "clean" ? detail.shotlist.items.map(item => String(item.sortIndex)) : ["batch"];
+  return { successors: scopes.map(scope => ({ type: next.jobType, stage: next.stage, scope, inputHash,
+    payload: { scope: "full", source: "pipeline_auto_converge", inputSnapshot: pipelineInputSnapshot(job.topic_id, next.stage),
+      ...(job.payload.shotlistRepairLimit === 0 ? { shotlistRepairLimit: 0 } : {}),
+      ...(job.payload.scriptRepairLimit === 0 ? { scriptRepairLimit: 0 } : {}),
+      ...(job.payload.infoRepairLimit === 0 ? { infoRepairLimit: 0 } : {}),
+      ...(job.payload.ttsRepairLimit === 0 ? { ttsRepairLimit: 0 } : {}),
+      ...(job.payload.reviewOnly === true ? { reviewOnly: true } : {}) } })) };
+}
+
+function validateDurableUpstreamResult(job, result) {
+  if (result?.execution !== "succeeded" || result?.quality !== "pass") throw new Error("upstream_provider_result_not_accepted");
+  const detail = getTopicDetailById(job.topic_id);
+  if (job.pipeline_stage === "script" && (!detail.script || !["draft", "approved"].includes(detail.script.status))) throw new Error("script_result_incomplete");
+  if (job.pipeline_stage === "shotlist" && (!detail.shotlist?.items?.length || detail.shotlist.raw?.qualityStatus !== "passed")) throw new Error("shotlist_result_incomplete");
+  if (job.pipeline_stage === "tts") {
+    const tts = mapTtsRunRow(getLatestTtsRunByTopicStatement.get(job.topic_id));
+    const exists = value => {
+      if (!value) return false;
+      const file = path.resolve(__dirname, value);
+      const relative = path.relative(DATA_DIR, file);
+      return !relative.startsWith("..") && !path.isAbsolute(relative) && existsSync(file) && readFileSync(file).length > 0;
+    };
+    if (tts?.status !== "generated" || tts.scriptId !== detail.script?.id || !(tts.totalDurationSec > 0)
+      || !exists(tts.outputPath) || !tts.segments?.length || tts.segments.some(segment => segment.status !== "generated"
+        || !(segment.durationSec > 0 && segment.durationSec <= NATIVE_CLIP_DURATION_SEC + 0.01) || !exists(segment.audioPath))) {
+      throw new Error("measured_tts_result_incomplete");
+    }
+  }
+}
+
+function pipelineSuccessorIntents(job, result) {
+  if (job.payload.cleanRepairId) return [{ type:'pipeline_continue',stage:'continue',scope:String(job.id),operation:'clean_repair_advance',inputHash:job.input_revision,
+    payload:{previousStage:job.pipeline_stage,cleanRepairId:job.payload.cleanRepairId} }];
+  const successors = [];
+  if (job.pipeline_stage === "clean") for (const clip of result?.followUpClipIndexes || []) successors.push({ type: "clean_image_generate", stage: "clean", scope: String(clip), inputHash: job.input_revision, payload: { source: "pipeline_auto_converge", inputSnapshot: job.payload.inputSnapshot } });
+  successors.push({ type: "pipeline_continue", stage: "continue", scope: String(job.id), operation: "advance", inputHash: job.input_revision, payload: { previousStage: job.pipeline_stage,
+    ...(job.payload.shotlistRepairLimit === 0 ? { shotlistRepairLimit: 0 } : {}),
+      ...(job.payload.scriptRepairLimit === 0 ? { scriptRepairLimit: 0 } : {}),
+      ...(job.payload.infoRepairLimit === 0 ? { infoRepairLimit: 0 } : {}),
+      ...(job.payload.ttsRepairLimit === 0 ? { ttsRepairLimit: 0 } : {}),
+    ...(job.payload.reviewOnly === true ? { reviewOnly: true } : {}) } });
+  return successors;
+}
+
+async function executeDurablePipelineJob(mapped, providers = {}) {
+  if (!pipelineStore || !validatePipelineBootstrap(process.env, __dirname)) throw new Error("durable_pipeline_disabled");
+  const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get(mapped.id);
+  const job = { ...row, lease_token: mapped.leaseToken, payload: parseStoredJson(row?.payload_json, {}) };
+  const context = createJobContext(mapped);
+  try {
+    return await pipelineRunner.execute(job, async (control) => pipelineExecution.run({ job, control }, async () => {
+      const providerContext = { ...context, inputSnapshot: structuredClone(job.payload.inputSnapshot || null), signal: AbortSignal.any([context.signal, control.signal]), progress(...args) { control.assertCurrent(); context.progress(...args); } };
+      {
+        if (job.pipeline_stage === "continue") return await durablePipelineContinuation(job);
+        if (!job.payload.inputSnapshot || hashPipelineInputSnapshot(job.payload.inputSnapshot) !== job.input_revision) throw new Error("input_snapshot_missing_or_mismatched");
+        if (pipelineInputRevision(job.topic_id, job.pipeline_stage) !== job.input_revision) throw new Error("input_revision_changed");
+        if (job.pipeline_stage === "script") {
+          const feasibility = await batchFeasibilityOutcome(job);
+          if (feasibility) return feasibility;
+        }
+        const descriptor = typeof providers[job.pipeline_stage] === "object" ? providers[job.pipeline_stage]
+          : !providers[job.pipeline_stage] && (process.env.DINOBOX_ENABLE_STAGED_PROVIDERS === "1"
+            || job.pipeline_stage === "tts" && process.env.DINOBOX_ENABLE_STAGED_TTS === "1") ? {} : null;
+        if (job.payload.cleanRepairId && (!descriptor || descriptor.mockModule)) throw new Error('clean_repair_requires_native_staged_adapter');
+        if (descriptor) {
+          const staged = await prepareStagedProvider({ store: pipelineStore, job, dataRoot: DATA_DIR, workspaceRoot: __dirname,
+            control: { ...control, signal: providerContext.signal }, descriptor });
+          if (pipelineInputRevision(job.topic_id, job.pipeline_stage) !== job.input_revision) throw new Error("input_revision_changed_during_provider");
+          return { ...staged, successors: pipelineSuccessorIntents(job, staged.result), validateBeforePublish() {
+            staged.assertInputs();
+            if (pipelineInputRevision(job.topic_id, job.pipeline_stage) !== job.input_revision) throw new Error("input_revision_changed_before_promotion");
+            if (job.pipeline_stage === 'shotlist' && staged.promotion.changes.some(change=>['tts_runs','tts_segments'].includes(change.table))) {
+              if (descriptor.mockModule || getTopicDetailById(job.topic_id).script?.status !== 'draft' || pipelineStore.artifacts(job.run_id).length) throw new Error('upstream_repair:unsafe_existing_outputs');
+              validateUpstreamNarrationTransition(job.payload.inputSnapshot, staged.result.inputTransition);
+              const transition=staged.result.inputTransition;
+              for(const audio of [{...transition.beforeAudio,index:transition.rowIndex},...transition.retainedAudio]){
+                const segment=job.payload.inputSnapshot.tts.segments.find(row=>row.segmentIndex===audio.index);
+                if(path.resolve(__dirname,segment.audioPath)!==path.resolve(audio.path) || readPcmWav(audio.path).contentHash!==audio.contentHash)throw new Error('upstream_repair:before_audio_binding');
+              }
+            }
+            if (job.payload.cleanRepairId) {
+              const repair = pipelineStore.cleanRepairs(job.run_id).find(row => row.id === job.payload.cleanRepairId);
+              if (!repair || staged.artifacts.length !== 1 || String(staged.artifacts[0].clip) !== repair.clip_key) throw new Error('clean_repair_single_target_violation');
+              const approved = db.prepare("SELECT 1 FROM asset_reviews WHERE topic_id=? AND clip_index=? AND asset_type=? AND status='OK'").get(job.topic_id,Number(repair.clip_key),job.pipeline_stage);
+              if (approved) throw new Error('clean_repair_approved_during_generation');
+              if (job.pipeline_stage === 'clean' && createHash('sha256').update(readFileSync(staged.artifacts[0].path)).digest('hex') === repair.before_hash) throw new Error('clean_repair_no_visual_change');
+            }
+          }, validatePublished() {
+            staged.assertInputs();
+            // Native script/shotlist may promote an enriched production brief.
+            // Its beforeimage is fenced before applying this explicit output delta.
+            if (job.pipeline_stage === 'shotlist' && staged.result.inputTransition) {
+              const transition = staged.result.inputTransition;
+              validateUpstreamNarrationTransition(job.payload.inputSnapshot, transition);
+              const current = pipelineInputSnapshot(job.topic_id, 'shotlist');
+              if (scriptRepairHash({script:current.script,tts:current.tts}) !== scriptRepairHash({script:transition.toSnapshot.script,tts:transition.toSnapshot.tts})) throw new Error('upstream_repair:promoted_revision_mismatch');
+              if(path.resolve(__dirname,current.tts.segments[transition.rowIndex-1].audioPath)!==path.resolve(transition.afterAudio.path)
+                || path.resolve(__dirname,current.tts.outputPath)!==path.resolve(transition.masterAudio.path))throw new Error('upstream_repair:after_audio_binding');
+              for (const audio of [transition.beforeAudio,transition.afterAudio,transition.masterAudio,...transition.retainedAudio]) {
+                const actual=readPcmWav(audio.path);
+                if (actual.contentHash !== audio.contentHash || audio.durationSec !== undefined && actual.durationSec !== audio.durationSec) throw new Error('upstream_repair:audio_changed');
+              }
+              const script = getTopicDetailById(job.topic_id).script, review = script?.qualityReviews?.at(-1);
+              if (!review?.passed || review.candidateHash !== buildScriptCandidateHash(script)) throw new Error('upstream_repair:review_missing');
+            } else if (job.pipeline_stage === "tts" && !descriptor.mockModule && staged.result.inputTransition) {
+              const expectedRevision = validateTtsRepairTransition(job.payload.inputSnapshot, staged.result.inputTransition);
+              if (pipelineInputRevision(job.topic_id, "tts") !== expectedRevision) throw new Error("measured_tts_transition_revision_mismatch");
+              validateMeasuredRepairAudio(staged.result.inputTransition);
+              const script = getTopicDetailById(job.topic_id).script;
+              const review = script?.qualityReviews?.at(-1);
+              if (!review?.passed || review.candidateHash !== buildScriptCandidateHash(script)) throw new Error("measured_tts_transition_review_missing");
+            } else if ((descriptor.mockModule || !["script", "shotlist"].includes(job.pipeline_stage))
+              && pipelineInputRevision(job.topic_id, job.pipeline_stage) !== job.input_revision) throw new Error("input_revision_changed_during_promotion");
+            if (["script", "tts", "shotlist"].includes(job.pipeline_stage)) validateDurableUpstreamResult(job, staged.result);
+            if (job.payload.cleanRepairId && job.pipeline_stage === 'clean') {
+              const clip = Number(job.scope_key);
+              db.prepare("UPDATE asset_reviews SET status='REPLACE_CANDIDATE',note='CLEAN repaired; this INFO must be regenerated',updated_at=CURRENT_TIMESTAMP WHERE topic_id=? AND clip_index=? AND asset_type='info'").run(job.topic_id,clip);
+              db.prepare("UPDATE video_jobs SET status='stale',error='clean_repair_requires_separate_video_approval' WHERE topic_id=? AND clip_index=?").run(job.topic_id,clip);
+            }
+          } };
+        }
+        let result;
+        const payload = { ...structuredClone(job.payload), id: job.topic_id, topicId: job.topic_id };
+        if (providers[job.pipeline_stage]) { control.reserveInvocation(); result = await providers[job.pipeline_stage](payload, providerContext); }
+        // Function providers are test-only. Native adapters require the explicit
+        // staged descriptor/opt-in above; never fall back to shared execution.
+        else throw new Error("durable_real_provider_not_staged");
+        control.assertCurrent();
+        if (["script", "tts", "shotlist"].includes(job.pipeline_stage)) validateDurableUpstreamResult(job, result);
+        if (pipelineInputRevision(job.topic_id, job.pipeline_stage) !== job.input_revision) throw new Error("input_revision_changed_during_provider");
+        const artifacts = [];
+        if (["clean", "info"].includes(job.pipeline_stage)) {
+          const assets = await listProjectAssetsForTopic(job.topic_id);
+          const shotlist = getTopicDetailById(job.topic_id).shotlist;
+          const selected = job.pipeline_stage === "clean" ? assets.clean.filter(asset => Number(asset.name.match(/^(\d+)/u)?.[1]) === Number(job.scope_key)) : assets.info;
+          const expected = job.pipeline_stage === "clean" ? 1 : assets.expectedCount;
+          if (!expected || selected.length !== expected) throw new Error("artifact_count_mismatch");
+          for (const asset of selected) {
+            const clip = Number(asset.name.match(/^(\d+)/u)?.[1]);
+            const item = shotlist.items.find(entry => entry.sortIndex === clip);
+            artifacts.push({ path: path.resolve(__dirname, asset.path), clip, kind: job.pipeline_stage, inputHash: job.input_revision,
+              quality: asset.autoQc?.passed === true && isAiVerifiedAssetStatus(asset.status) ? "pass" : "revise",
+              freshness: asset.autoQc?.stale ? "stale" : "current", userApproval: asset.status === "OK" ? "approved" : "pending",
+              requiredOverlay: job.pipeline_stage === "info" && (item?.infoSpec?.requiresOverlay === true
+                || job.payload.inputSnapshot.providerContext?.initialShotlistItems?.find(entry => entry.sortIndex === clip)?.infoSpec?.requiresOverlay === true),
+              overlayType: item?.infoSpec?.type });
+          }
+        }
+        const successors = pipelineSuccessorIntents(job, result);
+        providerContext.signal.throwIfAborted();
+        return { result, artifacts, successors };
+      }
+    }));
+  } finally { context.close(); }
+}
+
 async function enqueuePipelineSuccessor(job) {
   if (job.payload?.autoConverge !== true || !job.topicId) return null;
-  let assets = await listProjectAssetsForTopic(job.topicId);
-  let detail = getTopicDetailById(job.topicId);
-  const isCanary = detail.topic?.runLane === "production_canary";
-  if (isCanary && detail.script?.status === "draft" && !canaryHasAiPass(detail.topic)) {
-    // A completed script_generate job has already passed its independent script
-    // consensus. Record that canary checkpoint before TTS, never by treating a
-    // draft as an approved script.
-    if (job.type !== "script_generate") return { stage: "canary_ai_pass", blocked: "awaiting_canary_ai_pass" };
-    recordCanaryAiPass({ topicId: job.topicId, reviewer: "pipeline_auto_converge" });
-    detail = getTopicDetailById(job.topicId);
-  }
-  if (isCanary && job.type === "shotlist_generate" && detail.shotlist?.status !== "approved") {
-    if (detail.shotlist?.raw?.qualityStatus !== "passed") {
-      return { stage: "shotlist_review", blocked: "quality_not_passed" };
-    }
-    await approveCanaryShotlistWithAi({ topicId: job.topicId, reviewer: "pipeline_auto_converge" });
-    detail = getTopicDetailById(job.topicId);
-    assets = await listProjectAssetsForTopic(job.topicId);
-  }
-  const next = getNextPipelineJob({
-    scriptReady: Boolean(detail.script && (detail.script.status === "approved"
-      || (detail.script.status === "draft" && canaryHasAiPass(detail.topic)))),
-    ttsMeasured: Boolean(assets.ttsRun?.status === "generated" && Number(assets.ttsRun?.totalDurationSec || 0) > 0),
-    shotlistReady: Boolean(assets.shotlistApproved),
-    cleanReady: Boolean(assets.cleanReady),
-    infoReady: Boolean(assets.infoReady),
-    inputHash: buildQualityContractHash({
-      scriptId: detail.script?.id || 0,
-      ttsRunId: assets.ttsRun?.id || 0,
-      shotlistId: assets.shotlist?.id || 0,
-      cleanCount: assets.clean?.length || 0,
-      infoCount: assets.info?.length || 0
-    })
-  });
-  if (!next.jobType || next.stage === "complete") return next;
-  if (job.type === "tts_generate" && next.stage === "tts") {
-    return { ...next, hold: "measured_tts_unresolved" };
-  }
-  if (job.type === "shotlist_generate" && next.stage === "shotlist") {
-    return { ...next, hold: "awaiting_shotlist_review" };
-  }
-  if (job.type === "clean_image_generate" && next.stage === "clean") {
-    const activeCleanCount = db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE topic_id = ? AND type = 'clean_image_generate' AND status IN ('queued', 'running')").get(job.topicId).count;
-    if (activeCleanCount > 0) return { ...next, waiting: "clean_batch" };
-  }
-  const pipeline = { stage: next.stage, inputHash: next.inputHash };
-  if (next.stage === "clean") {
-    const batch = await enqueueCleanImageGeneration({
-      topicId: job.topicId,
-      scope: "full",
-      source: "pipeline_auto_converge",
-      autoConverge: true,
-      pipeline
-    });
-    return { ...next, queued: { job: batch.jobs[0] || null }, batch };
-  }
-  const queued = enqueueAiJob(next.jobType, job.topicId, {
-    source: "pipeline_auto_converge",
-    autoConverge: true,
-    pipeline
-  });
-  return { ...next, queued };
+  // Only the durable result transaction may enqueue an automatic successor.
+  // Historical unbound jobs remain visible rather than obtaining a fresh budget.
+  return { blocked: "legacy_run_binding_required" };
 }
 
 function claimNextAiJob() {
@@ -4155,21 +4727,31 @@ function claimNextAiJob() {
     const row = AI_WORKER_JOB_ID
       ? db.prepare(`
         SELECT * FROM jobs
-        WHERE status = 'queued' AND cancel_requested = 0 AND id = ?
+        WHERE status = 'queued' AND cancel_requested = 0 ${!pipelineStore && hasDurableJobColumns ? "AND run_id IS NULL" : ""} AND id = ?
         LIMIT 1
       `).get(AI_WORKER_JOB_ID)
       : AI_WORKER_TOPIC_ID
         ? db.prepare(`
           SELECT * FROM jobs
-          WHERE status = 'queued' AND cancel_requested = 0 AND topic_id = ?
+          WHERE status = 'queued' AND cancel_requested = 0 ${!pipelineStore && hasDurableJobColumns ? "AND run_id IS NULL" : ""} AND topic_id = ?
           ORDER BY id LIMIT 1
         `).get(AI_WORKER_TOPIC_ID)
         : db.prepare(`
           SELECT * FROM jobs
-          WHERE status = 'queued' AND cancel_requested = 0
+          WHERE status = 'queued' AND cancel_requested = 0 ${!pipelineStore && hasDurableJobColumns ? "AND run_id IS NULL" : ""}
           ORDER BY id LIMIT 1
         `).get();
     if (!row) {
+      db.exec("COMMIT");
+      return null;
+    }
+    if (row.run_id) {
+      const claimed = pipelineStore.claim(row.id);
+      db.exec("COMMIT");
+      return claimed ? { ...mapJobRow(claimed), leaseToken: claimed.lease_token } : null;
+    }
+    if (parseStoredJson(row.payload_json, {}).autoConverge === true) {
+      db.prepare("UPDATE jobs SET status = 'reconcile_required', error = 'legacy_run_binding_required', completed_at = CURRENT_TIMESTAMP WHERE id = ?").run(row.id);
       db.exec("COMMIT");
       return null;
     }
@@ -4184,6 +4766,13 @@ function claimNextAiJob() {
     return mapJobRow(db.prepare("SELECT * FROM jobs WHERE id = ?").get(row.id));
   } catch (error) {
     db.exec("ROLLBACK");
+    if (error.pipelineBudgetBatchId || error.pipelineBudgetRunId) {
+      pipelineStore.transaction(() => {
+        if (error.pipelineBudgetBatchId) pipelineStore.holdBatch(error.pipelineBudgetBatchId, "budget_exhausted");
+        else pipelineStore.hold(error.pipelineBudgetRunId, "budget_exhausted");
+      });
+      return null;
+    }
     throw error;
   }
 }
@@ -4305,6 +4894,7 @@ function isTimeoutError(error) {
 }
 
 async function executeAiJob(job) {
+  if (job.runId) return executeDurablePipelineJob(job);
   const context = createJobContext(job);
   let stageHeartbeatTimer = null;
   appendJobEvent(job.id, job.topicId, "started", 1, "백그라운드 작업을 시작했습니다.");
@@ -5380,6 +5970,11 @@ function cancelJob(payload) {
   const id = Number(payload.id);
   const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get(id);
   if (!row) throw new Error("취소할 작업을 찾을 수 없습니다.");
+  if (row.run_id) {
+    if (!pipelineStore) throw new Error("durable_pipeline_disabled");
+    pipelineStore.cancel(row.run_id);
+    return { job: mapJobRow(db.prepare("SELECT * FROM jobs WHERE id = ?").get(id)), run: pipelineStore.getRun(row.run_id) };
+  }
   if (["completed", "failed", "canceled"].includes(row.status)) return { job: mapJobRow(row) };
   db.prepare(`
     UPDATE jobs SET cancel_requested = 1,
@@ -5417,7 +6012,7 @@ async function runAudioGpuOperation(operation, callback) {
     return await callback();
   } finally {
     activeAudioGpuOperation = "";
-    queueMicrotask(() => runVideoWorker().catch((error) => console.error("Video worker failed:", error)));
+    if (!DISABLE_BACKGROUND_WORKERS) queueMicrotask(() => runVideoWorker().catch((error) => console.error("Video worker failed:", error)));
   }
 }
 
@@ -6475,7 +7070,8 @@ function cleanupNoisyTopics() {
   }
 }
 
-cleanupNoisyTopics();
+// A staged provider must not rewrite unrelated candidates during module bootstrap.
+if (!PIPELINE_PROVIDER_WORKER) cleanupNoisyTopics();
 
 async function runTopicDiscovery(payload, jobContext = null) {
   const mainTopic = String(payload.mainTopic || "").trim();
@@ -6796,7 +7392,7 @@ async function preflightReplacementVisualReference(evidence) {
       if (!existsSync(renderedPath) || (await stat(renderedPath)).size < 100) throw new Error("PDF page render 검증에 실패했습니다.");
       cachedPath = renderedPath;
     }
-    return { verified: true, finalUrl: response.url || targetUrl, contentType: media.contentType, byteSize: buffer.length, sha256: hash, cachedPath: toRelativeWorkspacePath(cachedPath), verification: { mediaKind: media.kind, referencePage: Number(evidence.referencePage || 0), verifiedAt: new Date().toISOString() } };
+    return { verified: true, finalUrl: response.url || targetUrl, contentType: media.contentType, byteSize: buffer.length, sha256: hash, cachedPath: toRelativeWorkspacePath(cachedPath), verification: { mediaKind: media.kind, referencePage: Number(evidence.referencePage || 0), contentBinding: createReferenceBinding({ sourcePath: toRelativeWorkspacePath(sourcePath), cachedPath: toRelativeWorkspacePath(cachedPath), sourceHash: hash, mediaKind: media.kind, referencePage: evidence.referencePage }), verifiedAt: new Date().toISOString() } };
   } catch (error) {
     return { verified: false, error: String(error?.message || error) };
   }
@@ -7037,11 +7633,21 @@ function buildQualityContractHash(value) {
   return createHash("sha256").update(JSON.stringify(value || {})).digest("hex");
 }
 
+async function settleProviderGroup(promises) {
+  // A failed sibling must not close the worker before other result ACKs arrive.
+  const results = await Promise.allSettled(promises);
+  const failure = results.find(result => result.status === "rejected");
+  if (failure) throw failure.reason;
+  return results.map(result => result.value);
+}
+
 async function runQualityConsensus({ stage, topicId, contractHash = "", jobContext, deterministicIssues = [], requiredReviewerRoles = [], runReviewer }) {
   const reviewerRoles = requiredReviewerRoles.length ? requiredReviewerRoles : ["evidence", "production"];
-  const primaryReviews = reviewerRoles.length > 1
-    ? await Promise.all(reviewerRoles.slice(0, 2).map((role, index) => runReviewer({ role, ordinal: index + 1, priorReviews: [] })))
-    : [await runReviewer({ role: reviewerRoles[0], ordinal: 1, priorReviews: [] })];
+  const primaryReviews = PIPELINE_PROVIDER_WORKER && reviewerRoles.length > 1
+    ? await settleProviderGroup(reviewerRoles.slice(0, 2).map((role, index) => runReviewer({ role, ordinal: index + 1, priorReviews: [] })))
+    : reviewerRoles.length > 1
+      ? await Promise.all(reviewerRoles.slice(0, 2).map((role, index) => runReviewer({ role, ordinal: index + 1, priorReviews: [] })))
+      : [await runReviewer({ role: reviewerRoles[0], ordinal: 1, priorReviews: [] })];
   const first = primaryReviews[0];
   const firstIssues = Array.isArray(first?.issues) ? first.issues : [];
   const firstScore = Number(first?.score || 0);
@@ -8914,6 +9520,7 @@ ${topic.runLane === "production_canary" ? "- This canary has an approved fixed s
 - A limitations beat is optional. Reject one that merely recites missing evidence, unspecified dimensions, or research scope without changing the viewer's understanding of the mechanism.
 - A warning alone may still pass, except repetition, weak_hook, or not_visualizable warnings because those make the finished short unusable. Any error, score below 0.82, unsupported claim, or misleading premise must fail.
 - segmentIndex is 1-based for a productionScript row and 0 for a script-wide issue.
+- Set targetField to narration only when the repair is confined to that single row's spoken wording, with the approved facts, numerical quantities, units, conditions, claims and visual-state contract unchanged. Use other for changes to any other field, and unspecified for ambiguous or cross-row repairs. Never label a factual or conditional change as wording-only.
 
 Topic:
 ${JSON.stringify({ title: topic.title, hook: topic.hook, mainTopic: topic.mainTopic, subtopic: topic.subtopic }, null, 2)}
@@ -8927,6 +9534,8 @@ ${JSON.stringify(productionBrief, null, 2)}
 Deterministic issues already found:
 ${JSON.stringify(deterministicIssues, null, 2)}
 
+${jobContext?.narrationRepairEvidence ? `Wording-only patch awaiting independent re-review. Do not infer semantic validity from its structural checks. Compare the original and revised narration against the approved row claims and visual state; reject altered quantities, units, conditions, scope, negation, causal meaning or unresolved findings. Review the entire candidate independently as usual.
+${JSON.stringify(jobContext.narrationRepairEvidence, null, 2)}\n` : ""}
 Script:
 ${JSON.stringify(script, null, 2)}
 `.trim();
@@ -9114,7 +9723,7 @@ async function reviseScriptWithAi(topic, factCheck, script, reviews, jobContext,
   const candidateReviews = filterScriptReviewsForCandidate(reviews, candidateHash);
   const stateBoundedTargetedNarrationConstraint = revisionOptions.reviewerTargeted
     && requiresStateBoundedScript(topic, productionBrief)
-    ? `- For this reviewer-targeted, state-bounded revision only, when the affected approved rows and claims support it, keep the opening concept as concise as "왜 접었을까요? 페어링 때문입니다." and the final concept as concise as "지상 시험도 5층을 확인했습니다.". Change no other rows or contracts unless the current candidate reviews require it.`
+    ? `- For this reviewer-targeted, state-bounded revision, use only the affected row's approved claims, visual state and current candidate review. Preserve numerical quantities, units, conditions and every unrelated row or contract. Do not borrow wording, facts or constraints from another topic.`
     : "";
   const measuredTtsCompressionConstraint = Array.isArray(revisionOptions.measuredTtsOverruns)
     && revisionOptions.measuredTtsOverruns.length
@@ -9180,6 +9789,44 @@ ${JSON.stringify(script, null, 2)}
   );
 }
 
+async function patchScriptNarration(topic, factCheck, script, review, target, jobContext, productionBrief, measuredCompression = false) {
+  const row = script.productionScript[target.rowIndex - 1];
+  const claimRefs = new Set(row.claimRefs);
+  const approvedClaims = (factCheck.claims || []).filter(claim => claimRefs.has(claim.id) && claim.status === "SUPPORTED" && claim.useInVideo !== false);
+  const visualState = productionBrief?.visualStates?.find(state => state.stateId === row.visualStateId);
+  if (!visualState || !approvedClaims.length || approvedClaims.length !== claimRefs.size) throw new Error("narration_patch_evidence_missing");
+  const prompt = `${measuredCompression ? "Compress only the measured overrun row. Its actual WAV duration is supplied below. Produce materially shorter wording without changing meaning; a fresh independent review and actual TTS remeasurement are mandatory. Never change speech speed, clip duration, row count or another row." : "Repair only the indicated row's narration after its independent review."}
+Return one structured patch, not a script. Echo beforeHash and rowIndex exactly; field must be narration.
+Use only this row's approved claims, visual state and current review. Preserve facts, quantities, units, conditions, scope, negation and causal meaning. Do not change another row or any other field. If a safe wording-only repair is impossible, return the unchanged narration; it will be held, not accepted.
+Passing structural checks is not a semantic approval. The patched candidate must undergo a new independent evidence and production review.
+
+Patch target:
+${JSON.stringify(target, null, 2)}
+
+Approved claims for this row:
+${JSON.stringify(approvedClaims, null, 2)}
+
+Approved visual state:
+${JSON.stringify(visualState, null, 2)}
+
+Current review:
+${JSON.stringify(review, null, 2)}
+
+Current script:
+${JSON.stringify(script, null, 2)}`;
+  const patch = await runCodexJson(prompt, `${measuredCompression ? "tts" : "script"}-narration-patch-${topic.id}`, 180000, {
+    signal: jobContext.signal, outputSchema: narrationPatchSchema, models: ["gpt-5.6-sol"]
+  });
+  const patched = applyNarrationPatch(script, patch, target);
+  if (measuredCompression && patched.productionScript[target.rowIndex - 1].narration.trim().length >= row.narration.trim().length) throw new Error("measured_tts_patch_not_shorter");
+  // Validate on a copy: this legacy validator normalizes INFO fields in place.
+  // The patch itself must keep every unrelated field byte-for-byte unchanged.
+  validateScriptContract(structuredClone(patched), productionBrief, requiresStateBoundedScript(topic, productionBrief));
+  jobContext.narrationRepairEvidence = { rowIndex: target.rowIndex, beforeHash: target.beforeHash,
+    beforeNarration: row.narration, afterNarration: patched.productionScript[target.rowIndex - 1].narration };
+  return patched;
+}
+
 async function runScriptQualityLoop(topic, factCheck, initialScript, jobContext, productionBrief = null, onCandidate = null, initialReviews = [], initialBest = null, repairLimit = QUALITY_AUTO_REPAIR_LIMIT, contractHash = buildScriptUpstreamContractHash(factCheck, productionBrief)) {
   let script = initialScript;
   const initialCandidateHash = buildScriptCandidateHash(script);
@@ -9223,6 +9870,15 @@ async function runScriptQualityLoop(topic, factCheck, initialScript, jobContext,
     }
     await onCandidate?.(script, candidateReviews, bestCandidate?.candidateHash === candidateHash ? bestCandidate : null);
     if (review.passed) break;
+    if (jobContext?.durableNarrationRepair !== undefined) {
+      const target = jobContext.durableNarrationRepair && repairCycle === 0 ? selectNarrationRepairTarget(script, review) : null;
+      if (!target) break;
+      jobContext.progress(84, `${target.rowIndex}번 내레이션만 한 번 수정한 뒤 독립 재검수합니다.`);
+      script = await patchScriptNarration(reviewedTopic, factCheck, script, review, target, jobContext, productionBrief);
+      reviews = [];
+      repairCycle += 1;
+      continue;
+    }
     if (!shouldContinueQualityRepair(review, repairCycle + 1, startedAt, repairLimit, topic.runLane === "production_canary" ? "autoConverge" : "benchmark")) break;
     if (bestCandidate?.script
       && bestCandidate.reviews.length
@@ -9951,7 +10607,7 @@ async function verifyOfficialCanaryReference(reference) {
     if (!existsSync(renderedPath) || (await stat(renderedPath)).size < 100) throw new Error("PDF page render 검증에 실패했습니다.");
     cachedPath = renderedPath;
   }
-  return { referenceId: reference.id, verified: true, finalUrl: response.url || targetUrl, contentType: media.contentType, byteSize: buffer.length, sha256: hash, cachedPath: toRelativeWorkspacePath(cachedPath), status: "verified", verification: { mediaKind: media.kind, referencePage: reference.referencePage, verifiedAt: new Date().toISOString() } };
+  return { referenceId: reference.id, verified: true, finalUrl: response.url || targetUrl, contentType: media.contentType, byteSize: buffer.length, sha256: hash, cachedPath: toRelativeWorkspacePath(cachedPath), status: "verified", verification: { mediaKind: media.kind, referencePage: reference.referencePage, contentBinding: createReferenceBinding({ sourcePath: toRelativeWorkspacePath(sourcePath), cachedPath: toRelativeWorkspacePath(cachedPath), sourceHash: hash, mediaKind: media.kind, referencePage: reference.referencePage }), verifiedAt: new Date().toISOString() } };
 }
 
 function getCanaryAssets(topicId) {
@@ -10281,6 +10937,8 @@ async function generateScript(payload, jobContext = null) {
     }
     throw new Error("제작 설계서가 HOLD라서 대본을 만들지 않습니다. 시각 상태와 근거 범위를 먼저 보강해야 합니다.");
   }
+  const cropFeasibility = await preflightOfficialCleanGeometry({ topic: mapTopicRow(topic), factCheck, productionBrief });
+  if (!cropFeasibility.passed) throw new Error(`HOLD needs_reference: ${cropFeasibility.issues.map(issue => issue.code).join(", ")}`);
   const scriptContractHash = buildScriptUpstreamContractHash(factCheck, productionBrief);
   const downstreamFeedback = getLatestUpstreamQualityFeedback(id, "shotlist_quality");
   const scriptFeedback = getLatestUpstreamQualityFeedback(id, "script_quality");
@@ -10505,7 +11163,7 @@ JSON 스키마:
     ? { ...cachedBest, reviews: filterScriptReviewsForCandidate(cachedBest.reviews, initialCandidateHash) }
     : null;
   let effectiveRepairLimit = payload.reviewOnly === true ? 0 : payload.remediationRoute ? 1 : QUALITY_AUTO_REPAIR_LIMIT;
-  if (payload.remediationRoute === "local_targeted_revision" && cachedReviews.length) {
+  if (jobContext?.durableNarrationRepair === undefined && payload.reviewOnly !== true && payload.remediationRoute === "local_targeted_revision" && cachedReviews.length) {
     jobContext?.progress(42, "저장된 최신 검수 지시로 지적된 대본 범위만 교정합니다.");
     initialScript = await reviseScriptWithAi(
       topic,
@@ -10523,7 +11181,7 @@ JSON 스키마:
     // The requested repair has already been consumed. Review the corrected
     // candidate once and route any remaining issue without another generation.
     effectiveRepairLimit = 0;
-  } else if (payload.remediationRoute === "script_scope_compression"
+  } else if (jobContext?.durableNarrationRepair === undefined && payload.reviewOnly !== true && payload.remediationRoute === "script_scope_compression"
     && Array.isArray(payload.measuredTtsOverruns)
     && payload.measuredTtsOverruns.length) {
     const measuredReview = {
@@ -10707,6 +11365,7 @@ async function listProjectFiles(folder, suffix, statusMap = new Map(), defaultSt
           url: pathToStaticUrl(absolute),
           path: toRelativeWorkspacePath(absolute),
           size: fileStat.size,
+          contentHash: suffix.endsWith(".png") ? createHash("sha256").update(await readFile(absolute)).digest("hex") : "",
           updatedAt: fileStat.mtime.toISOString(),
           status: manifestStatus?.status || defaultStatus,
           note: manifestStatus?.note || "",
@@ -10786,10 +11445,16 @@ function markStaleShotlistAssets(assets, shotlistId, assetLabel) {
 }
 
 function reviewAsset(payload) {
+  pipelineExecution.getStore()?.control.assertCurrent();
   const topicId = Number(payload.topicId);
   const clipIndex = Number(payload.clipIndex);
   const assetType = String(payload.assetType || "").trim().toLowerCase();
-  const assetPath = String(payload.assetPath || "").trim().replace(/\\/gu, "/");
+  let assetPath = String(payload.assetPath || "").trim().replace(/\\/gu, "/");
+  // Staged paths may be absolute while a generator reports a workspace-relative path.
+  // Preserve the existing row identity instead of inserting an alias of the same file.
+  const existingReview = db.prepare('SELECT asset_path FROM asset_reviews WHERE topic_id=? AND clip_index=? AND asset_type=? ORDER BY id DESC').all(topicId, clipIndex, assetType)
+    .find(row => path.resolve(resolveWorkspacePath(row.asset_path)) === path.resolve(resolveWorkspacePath(assetPath)));
+  if (existingReview) assetPath = existingReview.asset_path;
   const status = String(payload.status || "").trim().toUpperCase();
   const note = String(payload.note || "").trim().slice(0, 1000);
   if (!topicId || !clipIndex || !["clean", "info"].includes(assetType) || !["AI_PASS", "OK", "REVIEW", "REPLACE_CANDIDATE"].includes(status)) {
@@ -10806,6 +11471,18 @@ function reviewAsset(payload) {
     if (autoQc.passed !== true) throw new Error(`자동 ${assetType.toUpperCase()} QC를 통과한 이미지에만 승인할 수 있습니다.`);
     if (!shotlist || !isAssetCurrentForShotlist(autoQc, shotlist.id)) {
       throw new Error("현재 장면표에서 생성한 이미지만 승인할 수 있습니다.");
+    }
+    if (status === "OK" && pipelineStore) {
+      const state = pipelineTopicStatus(topicId);
+      if (state.run) {
+        const record = pipelineStore.activeArtifacts(state.run.id).find(row => row.kind === assetType && row.clip_key === String(clipIndex)
+          && path.resolve(__dirname, parseStoredJson(row.metadata_json, {}).sourcePath || row.path) === path.resolve(absolute));
+        const evidence = state.evidence.find(row => row.id === record?.id);
+        if (evidence?.freshness !== "current" || evidence?.quality !== "pass") throw new Error("현재 입력·파일 해시와 검수에 결속된 durable 자산만 승인할 수 있습니다.");
+      }
+    }
+    if (payload.previousAssetHash && payload.previousAssetHash !== createHash("sha256").update(readFileSync(absolute)).digest("hex")) {
+      throw new Error("검수 화면을 연 뒤 이미지가 변경되었습니다. 새로고침 후 다시 검수하세요.");
     }
   }
   const provenance = {
@@ -10920,7 +11597,9 @@ function updateScenePrompt(payload) {
     const infoSpec = normalizeInfoGraphicSpec(payload.infoSpec);
     const issues = getInfoGraphicSpecIssues(infoSpec);
     if (issues.length) throw new Error(`INFO 명세가 불완전합니다: ${issues.join(", ")}`);
-    db.prepare("UPDATE shotlist_items SET info_spec_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    if (DURABLE_PIPELINE_ENABLED && !PIPELINE_PROVIDER_WORKER) {
+      recordInfoUserInput(db, { itemId: item.id, topicId, spec: infoSpec, prompt, expectedRevision: payload.expectedInfoRevision });
+    } else db.prepare("UPDATE shotlist_items SET info_spec_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .run(JSON.stringify(infoSpec), item.id);
     markVideoJobsStale(topicId, clipIndex, "INFO 설계 명세가 변경되었습니다.");
     return { ok: true, topicId, clipIndex, type, prompt, infoSpec };
@@ -10930,7 +11609,9 @@ function updateScenePrompt(payload) {
     info: db.prepare("UPDATE shotlist_items SET info_prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"),
     video: db.prepare("UPDATE shotlist_items SET video_prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
   };
-  statements[type].run(prompt, item.id);
+  if (type === "info" && DURABLE_PIPELINE_ENABLED && !PIPELINE_PROVIDER_WORKER) {
+    recordInfoUserInput(db, { itemId: item.id, topicId, prompt, expectedRevision: payload.expectedInfoRevision });
+  } else statements[type].run(prompt, item.id);
   if (type === "clean" || type === "info" || type === "video") {
     markVideoJobsStale(topicId, clipIndex, `${type.toUpperCase()} 제작 지시가 변경되었습니다.`);
   }
@@ -11025,7 +11706,12 @@ async function runCodexImageTask(prompt, jobContext) {
 
   try {
     for (const [modelIndex, model] of models.entries()) {
+      controller.signal.throwIfAborted();
+      if (PIPELINE_PROVIDER_WORKER) throw new Error("staged_clean_requires_deterministic_reference");
+      const invocationStartedAt = Date.now();
+      const invocationId = await startAiInvocation("clean-image-provider", model, prompt, {}, jobContext || {}, modelIndex);
       try {
+        controller.signal.throwIfAborted();
         const thread = codexClient.startThread({
           model,
           workingDirectory: __dirname,
@@ -11046,9 +11732,11 @@ async function runCodexImageTask(prompt, jobContext) {
           if (event.type === "turn.failed") throw new Error(event.error?.message || "이미지 생성 작업이 실패했습니다.");
           if (event.type === "error") throw new Error(event.message || "이미지 생성 스트림 오류가 발생했습니다.");
         }
+        await finishAiInvocation(invocationId, "completed", invocationStartedAt);
         return finalResponse;
       } catch (error) {
         const message = String(error.message || error);
+        await finishAiInvocation(invocationId, "failed", invocationStartedAt, message);
         const retryable = /capacity|overloaded|temporarily unavailable|rate limit|stream disconnected before completion/iu.test(message);
         if (!retryable || modelIndex === models.length - 1 || controller.signal.aborted) throw error;
         jobContext?.progress(16, `이미지 작업 모델이 혼잡해 ${models[modelIndex + 1]}로 자동 전환합니다.`);
@@ -11103,6 +11791,7 @@ ${JSON.stringify({
   const review = await runCodexJson(prompt, `clean-visual-review-${topic.id}-${item.sortIndex}-${attempt}-${reviewer.role || "evidence"}`, 180000, {
     signal: jobContext?.signal,
     outputSchema: CLEAN_VISUAL_REVIEW_OUTPUT_SCHEMA,
+    imagePaths: [outputPath, ...(referencePath && existsSync(referencePath) ? [referencePath] : [])],
     models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]
   });
   review.issues = (review.issues || []).map((issue) => ({
@@ -11127,6 +11816,7 @@ function extractOfficialCropContract(...sources) {
     if (!value || depth > 4 || typeof value !== "object") return null;
     for (const key of keys) {
       const bounds = normalizeNormalizedBounds(value[key]);
+      if (key === "requiredBounds" && value[key] != null && !bounds) throw new Error("HOLD official_crop_required_bounds_invalid");
       if (bounds) return bounds;
     }
     for (const nested of Object.values(value)) {
@@ -11157,6 +11847,7 @@ function extractOfficialCropContract(...sources) {
   return {
     panelCrop: findBounds(sources, ["panelCrop"]),
     focusBounds: findBounds(sources, ["focusBounds"]),
+    requiredBounds: findBounds(sources, ["requiredBounds"]),
     panelSequence: findPanelSequence(sources)
   };
 }
@@ -11168,6 +11859,27 @@ function getOfficialVisualReference(item, factCheck, productionBrief) {
     && ["official_photo", "construction_photo", "official_diagram", "official_section"].includes(String(candidate?.referenceType || ""))
   ));
   return { state, evidence, crop: extractOfficialCropContract(state, evidence) };
+}
+
+// requiredBounds is an explicit preservation rectangle in EXIF-oriented source-image
+// coordinates, not the legacy focusBounds crop alias. Only verified asset metadata
+// may supply it; the durable CLEAN/INFO input snapshot includes that metadata and hash.
+function bindOfficialRequiredBounds(topic, evidence, requested = null) {
+  const asset = getCanaryAssets(topic.id).find((candidate) => candidate.referenceId === String(evidence?.id || ""));
+  const declared = asset?.verification?.metadata?.requiredBounds;
+  if (declared == null && requested == null) return null;
+  const bounds = normalizeNormalizedBounds(declared);
+  if (requested != null && JSON.stringify(requested) !== JSON.stringify(bounds)) {
+    throw new Error("HOLD official_crop_required_bounds_unbound: untrusted preservation rectangle");
+  }
+  if (!bounds || !asset.verified || asset.sourceUrl !== evidence.referenceSourceUrl
+    || asset.mediaUrl !== evidence.referenceMediaUrl || asset.referenceType !== evidence.referenceType
+    || Number(asset.verification?.referencePage || 0) !== Number(evidence.referencePage || 0)
+    || asset.verification?.mediaKind !== "image") {
+    throw new Error("HOLD official_crop_required_bounds_unbound: verified source contract mismatch");
+  }
+  const binding = validateReferenceBinding(asset, __dirname, DATA_DIR);
+  return { bounds, sourcePath: binding.cachedPath, sha256: binding.contentHash };
 }
 
 async function resolveOfficialPanelSequenceInputs(topic, panelSequence) {
@@ -11195,15 +11907,62 @@ async function resolveOfficialPanelSequenceInputs(topic, panelSequence) {
       || asset.verification?.mediaKind !== "image") {
       throw new Error(`두 패널 CLEAN의 ${referenceId} 검증 cached official source가 manifest와 일치하지 않습니다.`);
     }
-    const cachedPath = resolveWorkspacePath(asset.cachedPath);
+    const cachedPath = validateReferenceBinding(asset, __dirname, DATA_DIR).cachedPath;
     try {
       if (!(await stat(cachedPath)).isFile()) throw new Error("not a file");
     } catch {
       throw new Error(`두 패널 CLEAN의 ${referenceId} cached official source 파일이 없습니다.`);
     }
-    paths.push(cachedPath);
+    const bound = bindOfficialRequiredBounds(topic, {
+      id: referenceId, referenceSourceUrl: reference.sourceUrl, referenceMediaUrl: reference.mediaUrl,
+      referenceType: reference.referenceType, referencePage: reference.referencePage
+    }, panel.requiredBounds);
+    panel.requiredBounds = bound?.bounds || null;
+    paths.push(bound?.sourcePath || cachedPath);
   }
   return paths;
+}
+
+async function resolveOfficialCleanInputs(topic, item, factCheck, productionBrief, { cachedOnly = false } = {}) {
+  const { state, evidence, crop } = getOfficialVisualReference(item, factCheck, productionBrief);
+  const bound = bindOfficialRequiredBounds(topic, evidence, crop.requiredBounds);
+  crop.requiredBounds = bound?.bounds || null;
+  const panelPaths = await resolveOfficialPanelSequenceInputs(topic, crop.panelSequence);
+  if (crop.panelSequence && !panelPaths.length && crop.panelSequence.some(panel => panel.requiredBounds != null)) {
+    throw new Error("HOLD official_crop_required_bounds_unbound: per-panel preservation requires verified source IDs");
+  }
+  const direct = Boolean(evidence && (crop.panelCrop || crop.focusBounds || crop.requiredBounds || crop.panelSequence));
+  let sourcePath = bound?.sourcePath || "";
+  // Deterministic rendering and its preflight consume the same verified bytes.
+  // No downloads or page extraction are permitted in the read-only path.
+  if (direct) {
+    const asset = getCanaryAssets(topic.id).find(candidate => candidate.referenceId === String(evidence.id));
+    if (!asset?.verified || asset.sourceUrl !== evidence.referenceSourceUrl || asset.mediaUrl !== evidence.referenceMediaUrl
+      || asset.referenceType !== evidence.referenceType || asset.verification?.mediaKind !== "image"
+      || Number(asset.verification?.referencePage || 0) !== Number(evidence.referencePage || 0)
+      || JSON.stringify(asset.verification?.panelCrop || asset.verification?.focusBounds || null) !== JSON.stringify(evidence.panelCrop || evidence.focusBounds || null)) {
+      throw new Error("HOLD official_crop_source_unbound: verified cached image required");
+    }
+    sourcePath = validateReferenceBinding(asset, __dirname, DATA_DIR).cachedPath;
+  }
+  if (!sourcePath && !cachedOnly) sourcePath = await ensureVisualReferenceBitmap(topic.id, item, factCheck, productionBrief);
+  const correction = currentCleanRepairContracts(topic.id)[String(item.sortIndex)];
+  if (correction) {
+    if (!direct || crop.panelSequence || !bound || correction.referenceId !== evidence.id
+      || correction.referenceContentHash !== bound.sha256 || correction.shotlistId !== item.shotlistId
+      || JSON.stringify(correction.requiredBounds) !== JSON.stringify(bound.bounds)) throw new Error('clean_repair_reference_changed');
+    crop.panelCrop = correction.panelCrop;
+  }
+  return { state, evidence, crop, panelPaths, sourcePath, direct, boundRequired: bound };
+}
+
+async function preflightOfficialCleanGeometry(detail) {
+  const checks = [];
+  for (const state of detail.productionBrief?.visualStates || []) {
+    const resolved = await resolveOfficialCleanInputs(detail.topic, { visualStateId: state.stateId }, detail.factCheck, detail.productionBrief, { cachedOnly: true });
+    if (resolved.direct) checks.push({ stateId: state.stateId, ...resolved });
+  }
+  return validateOfficialCropFeasibility({ checks, python: PDF_PYTHON_BIN, renderer: OFFICIAL_PHOTO_CLEAN_RUNNER, runProcess });
 }
 
 async function ensureVisualReferenceBitmap(topicId, item, factCheck, productionBrief) {
@@ -11279,7 +12038,14 @@ async function generateCleanImage(payload, jobContext = null) {
   const cleanDir = path.join(projectDir, "clean");
   await mkdir(cleanDir, { recursive: true });
   const outputPath = path.join(cleanDir, `${item.fileStub}_CLEAN.png`);
-  if (existsSync(outputPath)) {
+  if (payload.cleanRepairId) {
+    const job = isolatedProviderOverrides.getStore()?.job;
+    const repair = job && pipelineStore.cleanRepairs(job.run_id).find(row => row.id === payload.cleanRepairId);
+    if (!PIPELINE_PROVIDER_WORKER || !repair || repair.clip_key !== String(clipIndex) || job.operation_kind !== 'explicit_clean_repair'
+      || !existsSync(outputPath) || createHash('sha256').update(readFileSync(outputPath)).digest('hex') !== repair.before_hash) throw new Error('clean_repair_before_artifact_changed');
+  }
+  if (existsSync(outputPath) && !payload.cleanRepairId) {
+    assertDurableArtifactReusable(outputPath, "clean", clipIndex);
     const existingQc = readAssetQc(outputPath);
     if (existingQc.passed === true && isAssetCurrentForShotlist(existingQc, shotlist.id)) {
       return { topicId, clipIndex, outputPath: toRelativeWorkspacePath(outputPath), autoQc: existingQc, reused: true };
@@ -11303,9 +12069,8 @@ async function generateCleanImage(payload, jobContext = null) {
     ? path.join(cleanDir, `${referenceItem.fileStub}_CLEAN.png`)
     : "";
   const canUseReference = referenceItem && referenceItem.sortIndex !== item.sortIndex && existsSync(referencePath);
-  const { state: visualState, evidence: officialEvidence, crop: officialCrop } = getOfficialVisualReference(item, factCheck, productionBrief);
-  const officialPanelSequencePaths = await resolveOfficialPanelSequenceInputs(topic, officialCrop.panelSequence);
-  const officialReferencePath = await ensureVisualReferenceBitmap(topicId, item, factCheck, productionBrief);
+  const { state: visualState, evidence: officialEvidence, crop: officialCrop,
+    panelPaths: officialPanelSequencePaths, sourcePath: officialReferencePath, boundRequired } = await resolveOfficialCleanInputs(topic, item, factCheck, productionBrief);
   const officialReferenceContract = {
     visualStateId: item.visualStateId,
     label: visualState?.label || "",
@@ -11318,6 +12083,7 @@ async function generateCleanImage(payload, jobContext = null) {
     referenceDescription: officialEvidence?.referenceDescription || "",
     panelCrop: officialCrop.panelCrop,
     focusBounds: officialCrop.focusBounds,
+    requiredBounds: officialCrop.requiredBounds,
     panelSequence: officialCrop.panelSequence
   };
   const referenceInstruction = officialReferencePath
@@ -11359,7 +12125,7 @@ Your final reply must be one JSON object only with this exact shape:
 {"passed":true,"score":0.0,"foundRequiredElements":["..."],"missingRequiredElements":[],"foundForbiddenElements":[],"note":"short visual assessment"}
 Set passed=true only when every required visible element is clearly recognizable, no forbidden element is present, and score is at least 0.72.
 `.trim();
-  const directOfficialReference = Boolean(officialReferencePath && officialEvidence && (officialCrop.panelCrop || officialCrop.focusBounds || officialCrop.panelSequence));
+  const directOfficialReference = Boolean(officialReferencePath && officialEvidence && (officialCrop.panelCrop || officialCrop.focusBounds || officialCrop.requiredBounds || officialCrop.panelSequence));
   let imageTaskResponse;
   if (directOfficialReference) {
     jobContext?.progress(30, `${item.sceneId} 검증된 공식 시각 근거를 CLEAN 세로 프레임으로 렌더합니다.`);
@@ -11370,12 +12136,12 @@ Set passed=true only when every required visible element is clearly recognizable
       env: { PYTHONIOENCODING: "utf-8" }
     });
     imageTaskResponse = JSON.stringify({
-      passed: true,
-      score: 1,
-      foundRequiredElements: item.requiredVisibleElements,
+      passed: false,
+      score: 0,
+      foundRequiredElements: [],
       missingRequiredElements: [],
       foundForbiddenElements: [],
-      note: "검증된 공식 시각 근거의 지정 panel crop을 새 형상 생성 없이 9:16 cover CLEAN으로 렌더했습니다."
+      note: "공식 source의 선언 영역만 기하학적으로 보존했습니다. 필수 요소의 실제 가시성은 독립 의미 검수가 필요합니다."
     });
   } else {
     imageTaskResponse = await runCodexImageTask(prompt, jobContext);
@@ -11450,6 +12216,10 @@ Re-inspect the official reference before generating. For a multi-panel reference
       note: "이미지 생성기가 구조화된 의미 검수 결과를 반환하지 않았습니다."
     };
   }
+  if (directOfficialReference) {
+    semanticQc = { ...semanticQc, passed: independentReview.passed === true, score: Number(independentReview.score || 0),
+      assessedBy: "independent_semantic_review", note: independentReview.summary || independentReview.observedState || semanticQc.note };
+  }
   autoQc.semantic = semanticQc;
   autoQc.independentSemantic = independentReview;
   autoQc.shotlistId = shotlist.id;
@@ -11460,7 +12230,11 @@ Re-inspect the official reference before generating. For a multi-panel reference
     evidenceId: officialEvidence?.id || officialEvidence?.state || "",
     referenceType: officialEvidence?.referenceType || "",
     panelCrop: officialCrop.panelCrop,
-    focusBounds: officialCrop.focusBounds
+    focusBounds: officialCrop.focusBounds,
+    requiredBounds: officialCrop.requiredBounds,
+    requiredBoundsSourceHash: boundRequired?.sha256 || null,
+    panelSequence: officialCrop.panelSequence,
+    preservationPolicy: officialCrop.requiredBounds ? "declared_required_bounds" : "entire_selected_region_without_semantic_inference"
   } : null;
   autoQc.passed = Boolean(
     autoQc.passed
@@ -11529,6 +12303,16 @@ async function enqueueCleanImageGeneration(payload) {
   if (!topicId) throw new Error("topicId가 필요합니다.");
   const shotlist = mapShotlistRow(getLatestShotlistByTopicStatement.get(topicId));
   if (!shotlist || shotlist.status !== "approved") throw new Error("장면표 승인이 먼저 필요합니다.");
+  if ((payload.autoConverge === true || payload.pipeline?.runId) && getTopicStatement.get(topicId)?.runLane === "production_canary") {
+    if (payload.clipIndex || payload.clipIndexes?.length || payload.scope && payload.scope !== 'full') {
+      throw new Error('durable_local_clean_correction_requires_same_run_adapter');
+    }
+    const master = shotlist.items.find(item => item.visualFamily === "exterior") || shotlist.items[0];
+    if (!master) throw new Error("생성할 CLEAN 장면이 없습니다.");
+    const queued = enqueueAiJob("clean_image_generate", topicId, { ...payload, clipIndex: master.sortIndex,
+      followUpClipIndexes: shotlist.items.filter(item => item.sortIndex !== master.sortIndex).map(item => item.sortIndex) });
+    return { topicId, requested: shotlist.items.length, jobs: [queued.job], runId: queued.runId, scope: "full" };
+  }
   const projectDir = await ensureProjectFolders(topicId);
   const cleanDir = path.join(projectDir, "clean");
   await mkdir(cleanDir, { recursive: true });
@@ -11825,6 +12609,22 @@ async function listProjectAssetsForTopic(topicId) {
   info = applyStoredAssetReviews(topicId, "info", info);
   clean = markStaleShotlistAssets(clean, shotlist?.id, "CLEAN 이미지");
   info = markStaleShotlistAssets(info, shotlist?.id, "INFO 이미지");
+  if (pipelineStore) {
+    const state = pipelineTopicStatus(topicId);
+    if (state.run?.status === "awaiting_user_review") {
+      const records = pipelineStore.activeArtifacts(state.run.id);
+      const bindReview = (kind, assets) => assets.map(asset => {
+        const record = records.find(row => row.kind === kind
+          && path.resolve(__dirname, parseStoredJson(row.metadata_json, {}).sourcePath || row.path) === path.resolve(__dirname, asset.path));
+        const evidence = state.evidence.find(row => row.id === record?.id);
+        if (evidence?.freshness !== "current" || evidence?.quality !== "pass") return { ...asset, status: "REPLACE_CANDIDATE",
+          note: "현재 입력·파일 해시 또는 durable 검수 근거가 일치하지 않습니다.", autoQc: { ...asset.autoQc, passed: false, stale: true } };
+        return asset.status === "OK" && evidence.userApproval !== "approved" ? { ...asset, status: "AI_PASS", note: "현재 파일에 대한 사용자 재승인이 필요합니다." } : asset;
+      });
+      clean = bindReview("clean", clean);
+      info = bindReview("info", info);
+    }
+  }
   const expectedCount = shotlist?.clipCount || clean.length;
   const infoPlanStale = isInfoPlanStale(shotlist);
   const cleanReady = expectedCount > 0 && clean.length === expectedCount && clean.every((asset) => asset.status === "OK");
@@ -12143,8 +12943,8 @@ async function buildEditPlan(topicId, { writeManifest = false } = {}) {
 
   const detail = getTopicDetailById(topicId);
   const shotlist = detail.shotlist;
-  if (!shotlist) {
-    throw new Error("장면표가 먼저 필요합니다.");
+  if (!shotlist || shotlist.status === "stale") {
+    throw new Error("최신 타이밍이 검증된 장면표가 먼저 필요합니다.");
   }
   const ttsRun = mapTtsRunRow(getLatestTtsRunByTopicStatement.get(topicId));
   const narrationPath = resolveWorkspacePath(ttsRun?.outputPath || "");
@@ -12992,6 +13792,7 @@ function createVoicePreset(payload) {
 }
 
 function getTtsEnvironmentStatus() {
+  if (PIPELINE_PROVIDER_WORKER) return { inspected: false, reason: "isolated_provider_no_environment_probe" };
   const gpu = getGpuStatus();
   return {
     gpu,
@@ -13226,6 +14027,93 @@ async function generateVoiceSample(payload) {
   };
 }
 
+function measureStagedTtsResult(result, expectedOutputs, masterPath) {
+  if (!Array.isArray(result?.outputs) || result.outputs.length !== expectedOutputs.length
+    || new Set(result.outputs.map(output => Number(output.index))).size !== expectedOutputs.length) throw new Error("measured_tts_output_count_mismatch");
+  result.outputs = expectedOutputs.map(expected => {
+    const output = result.outputs.find(candidate => Number(candidate.index) === expected.index);
+    if (!output || path.resolve(output.path || "") !== path.resolve(expected.path)) throw new Error("measured_tts_output_path_mismatch");
+    const wav = readPcmWav(expected.path);
+    return { ...expected, durationSec: wav.durationSec, contentHash: wav.contentHash };
+  });
+  if (path.resolve(result.master?.path || "") !== path.resolve(masterPath)) throw new Error("measured_tts_master_path_mismatch");
+  result.master = { path: masterPath, durationSec: readPcmWav(masterPath).durationSec };
+  return result;
+}
+
+async function repairMeasuredTts(payload, prepared, initialResult, repeatedNarration, upstream = null) {
+  const options = isolatedProviderOverrides.getStore();
+  const topic = prepared.topic;
+  const scriptRow = getScriptByTopicStatement.get(topic.id);
+  if (!options?.job || topic.runLane !== "production_canary" || scriptRow?.status !== "draft") throw new Error("measured_tts_repair_requires_canary_draft");
+  const beforeScript = mapScriptRow(scriptRow);
+  const outputs = initialResult.outputs;
+  const overruns = upstream ? outputs.filter(output => output.index === upstream.target.rowIndex) : outputs.filter(output => output.durationSec > NATIVE_CLIP_DURATION_SEC + 0.01);
+  if (repeatedNarration || overruns.length !== 1) throw new Error("measured_tts_repair_requires_one_new_overrun");
+  if (upstream && (options.job.pipeline_stage !== 'shotlist' || pipelineStore.artifacts(options.job.run_id).length
+    || getLatestShotlistByTopicStatement.get(topic.id) || db.prepare('SELECT 1 FROM asset_reviews WHERE topic_id=? LIMIT 1').get(topic.id)
+    || parseStoredJson(scriptRow.rawJson, {}).upstreamShotlistRepair?.runId === options.job.run_id
+    || upstream.target.beforeHash !== scriptRepairHash(beforeScript))) throw new Error('upstream_repair:approved_artifacts_or_repeated_contract');
+  if (outputs.length !== beforeScript.productionScript.length || outputs.some((output, index) => output.index !== index + 1
+    || output.text !== beforeScript.productionScript[index].narration)) throw new Error("measured_tts_script_alignment_failed");
+  const overrun = overruns[0];
+  const target = { beforeHash: scriptRepairHash(beforeScript), rowIndex: overrun.index, field: "narration" };
+  const beforeAudio = { path: overrun.path, contentHash: overrun.contentHash, durationSec: overrun.durationSec };
+  const measurement = { type: "measured_tts_overrun", ttsRunId: prepared.run.id, segmentIndex: overrun.index,
+    durationSec: overrun.durationSec, limitSec: NATIVE_CLIP_DURATION_SEC, text: overrun.text, audio: beforeAudio };
+  const factCheck = mapFactCheckRow(getFactCheckByTopicStatement.get(topic.id));
+  const brief = mapProductionBriefRow(getProductionBriefByTopicStatement.get(topic.id));
+  const context = { signal: options.signal, inputSnapshot: payload.inputSnapshot, progress() { options.signal.throwIfAborted(); } };
+  const patched = await patchScriptNarration(topic, factCheck, beforeScript, upstream?.review || measurement, target, context, brief, !upstream);
+  const review = await reviewScriptConsensus(topic, factCheck, patched, context, 1, brief);
+  if (!review.passed) throw new Error("measured_tts_repair_semantic_rejected");
+  Object.assign(review, scriptReviewBinding({ contractHash: buildScriptUpstreamContractHash(factCheck, brief), factCheckId: factCheck.id,
+    productionBriefId: brief.id, candidateHash: buildScriptCandidateHash(patched) }));
+  review.reviewHash = hashScriptReview(review);
+  options.signal.throwIfAborted();
+  const narration = patched.productionScript[overrun.index - 1].narration;
+  const outputPath = overrun.path.replace(/\.wav$/iu, upstream ? '.upstream-repaired.wav' : '.repaired.wav');
+  const retryMaster = path.join(path.dirname(overrun.path), upstream ? 'upstream-repair-only.wav' : 'repair-only.wav');
+  const retryOutputs = [{ index: overrun.index, text: narration, path: outputPath }];
+  const referenceAudioPath = getVoiceReferencePath(prepared.voicePreset);
+  const retry = measureStagedTtsResult(await runVoxcpmJob({ kind: "script", engine: prepared.voicePreset.engine,
+    referenceAudioPath, promptWavPath: referenceAudioPath, promptText: getVoicePromptText(prepared.voicePreset),
+    styleInstruction: "", seed: 42, gapSec: 0.25, outputMasterPath: retryMaster, outputs: retryOutputs }), retryOutputs, retryMaster);
+  options.signal.throwIfAborted();
+  const repaired = retry.outputs[0];
+  const afterAudio = { path: repaired.path, contentHash: repaired.contentHash, durationSec: repaired.durationSec };
+  if (!(repaired.durationSec > 0 && repaired.durationSec <= NATIVE_CLIP_DURATION_SEC + 0.01)) {
+    recordTopicAttempt(topic.id, "measured_tts_repair", "hold", "단일 압축 후 실제 TTS가 다시 초과했습니다.", { measurement, afterAudio, narration });
+    throw new Error(`measured_tts_repair_still_overrun:${overrun.index}:${repaired.durationSec}`);
+  }
+  for (const output of outputs) if (readPcmWav(output.path).contentHash !== output.contentHash) throw new Error("measured_tts_original_audio_changed");
+  const mergedPath = path.join(path.dirname(overrun.path), upstream ? 'upstream-full-repaired.wav' : 'full-repaired.wav');
+  const merged = concatenatePcmWavs(outputs.map(output => output.index === overrun.index ? repaired.path : output.path), mergedPath, { gapSec: 0.25 });
+  options.signal.throwIfAborted();
+  const receipt = { measurement, beforeScript, afterAudio, narration, review, repairCount: 1,
+    ...(upstream ? {runId:options.job.run_id,fromRevision:options.job.input_revision,failureFingerprint:upstream.failureFingerprint} : {}) };
+  const raw = { ...parseStoredJson(scriptRow.rawJson, {}), finalScript: patched, qualityReviews: [review], [upstream ? 'upstreamShotlistRepair' : 'measuredTtsRepair']: receipt };
+  db.exec("BEGIN");
+  try {
+    const changed = db.prepare("UPDATE scripts SET production_script_json=?, tts_text=?, raw_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='draft' AND production_script_json=? AND tts_text=? AND raw_json=?")
+      .run(JSON.stringify(patched.productionScript), patched.ttsText, JSON.stringify(raw), scriptRow.id, scriptRow.productionScriptJson, scriptRow.ttsText, scriptRow.rawJson);
+    if (Number(changed.changes) !== 1) throw new Error("measured_tts_script_cas_failed");
+    const segment = db.prepare("UPDATE tts_segments SET text=?, estimated_duration_sec=?, audio_path=?, duration_sec=?, status='generated', updated_at=CURRENT_TIMESTAMP WHERE run_id=? AND segment_index=? AND text=?")
+      .run(narration, estimateKoreanTtsDuration(narration), toRelativeWorkspacePath(repaired.path), repaired.durationSec, prepared.run.id, overrun.index, overrun.text);
+    if (Number(segment.changes) !== 1) throw new Error("measured_tts_segment_cas_failed");
+    updateTtsRunStatement.run("generated", merged.durationSec, toRelativeWorkspacePath(mergedPath), "", prepared.run.id);
+    db.prepare("UPDATE tts_runs SET estimated_total_duration_sec=(SELECT SUM(estimated_duration_sec) FROM tts_segments WHERE run_id=?) WHERE id=?").run(prepared.run.id, prepared.run.id);
+    recordCanaryAiPass({ topicId: topic.id, reviewer: upstream ? 'upstream_narration_repair_consensus' : 'measured_tts_repair_consensus' });
+    recordTopicAttempt(topic.id, upstream ? 'upstream_narration_repair' : 'measured_tts_repair', 'passed', upstream ? '장면표가 지목한 표현 행만 독립 재검수·실측 재합성했습니다.' : '초과 행만 압축·독립 재검수·실측 재합성했습니다.', receipt);
+    db.exec("COMMIT");
+  } catch (error) { db.exec("ROLLBACK"); throw error; }
+  return { ...getTtsPlan(new URL(`http://localhost:${PORT}/api/tts/plan?topicId=${topic.id}`)), topic: mapTopicRow(getTopicStatement.get(topic.id)),
+    script: mapScriptRow(getScriptByTopicStatement.get(topic.id)), voicePreset: prepared.voicePreset,
+    inputTransition: { type: upstream ? 'shotlist_narration_repair' : 'measured_tts_narration_repair', fromRevision: options.job.input_revision,
+      toSnapshot: pipelineInputSnapshot(topic.id, upstream ? 'shotlist' : 'tts'), rowIndex: overrun.index, narration, beforeAudio, afterAudio,
+      ...(upstream ? {retainedAudio:outputs.filter(output=>output.index!==overrun.index).map(output=>({index:output.index,path:output.path,contentHash:output.contentHash})),masterAudio:{path:mergedPath,contentHash:merged.contentHash,durationSec:merged.durationSec},failureFingerprint:upstream.failureFingerprint} : {}) } };
+}
+
 async function generateTts(payload) {
   const topicId = Number(payload.topicId);
   const requestedPreset = payload.voicePresetId
@@ -13271,6 +14159,7 @@ async function generateTts(payload) {
       outputMasterPath,
       outputs
     });
+    if (PIPELINE_PROVIDER_WORKER) measureStagedTtsResult(result, outputs, outputMasterPath);
 
     let totalDuration = 0;
     for (const output of result.outputs || []) {
@@ -13288,7 +14177,7 @@ async function generateTts(payload) {
     const measuredTotal = result.master?.durationSec || Number(totalDuration.toFixed(2));
     const measuredOverruns = (result.outputs || [])
       .filter((output) => Number(output.durationSec || 0) > NATIVE_CLIP_DURATION_SEC + 0.01)
-      .map((output) => ({ segmentIndex: Number(output.index), durationSec: Number(output.durationSec), text: String(output.text || run.segments.find((segment) => Number(segment.segmentIndex) === Number(output.index))?.text || "") }));
+      .map((output) => ({ segmentIndex: Number(output.index), durationSec: Number(output.durationSec), text: String(output.text || run.segments.find((segment) => Number(segment.segmentIndex) === Number(output.index))?.text || ""), audioPath: output.path, contentHash: output.contentHash }));
     const narrationHash = buildQualityContractHash(run.segments.map((segment) => ({ index: segment.segmentIndex, text: segment.text })));
     const priorOverrun = db.prepare("SELECT id FROM topic_attempts WHERE topic_id = ? AND stage = 'measured_tts_overrun' AND json_extract(details_json, '$.narrationHash') = ? LIMIT 1").get(run.topicId, narrationHash);
     const repeatedNarration = Boolean(measuredOverruns.length && priorOverrun);
@@ -13302,6 +14191,11 @@ async function generateTts(payload) {
     if (measuredOverruns.length) recordTopicAttempt(run.topicId, "measured_tts_overrun", repeatedNarration ? "hold" : "row_edit_allowed", ttsError, { narrationHash, measuredOverruns, ttsRunId: run.id });
     db.prepare("UPDATE shotlists SET status = 'stale', updated_at = CURRENT_TIMESTAMP WHERE topic_id = ? AND status != 'stale'")
       .run(run.topicId);
+    const isolatedJob = isolatedProviderOverrides.getStore()?.job;
+    if (measuredOverruns.length && PIPELINE_PROVIDER_WORKER && isolatedJob
+      && pipelineStore.getRun(isolatedJob.run_id)?.lane === "production_canary" && payload.ttsRepairLimit !== 0 && payload.reviewOnly !== true) {
+      return await repairMeasuredTts(payload, prepared, result, repeatedNarration);
+    }
 
     return {
       ...getTtsPlan(new URL(`http://localhost:${PORT}/api/tts/plan?topicId=${run.topicId}`)),
@@ -13310,7 +14204,10 @@ async function generateTts(payload) {
       voicePreset: mapVoicePresetRow(getVoicePresetStatement.get(voicePreset.id))
     };
   } catch (error) {
-    updateTtsRunStatement.run("failed", null, "", error.message || "TTS 생성 실패", run.id);
+    const failedRun = PIPELINE_PROVIDER_WORKER ? mapTtsRunRow(getLatestTtsRunByTopicStatement.get(run.topicId)) : null;
+    const preserveMeasurement = failedRun?.id === run.id && failedRun.status === "hold";
+    updateTtsRunStatement.run(preserveMeasurement ? "hold" : "failed", preserveMeasurement ? failedRun.totalDurationSec : null,
+      preserveMeasurement ? failedRun.outputPath : "", error.message || "TTS 생성 실패", run.id);
     throw error;
   }
   }));
@@ -13675,6 +14572,7 @@ Blocking quality rules:
 - The approved visual-state contract below is the authoritative scope for this edit. Do not promote ordering metadata in a broad claim or source reference into a required causal beat unless the narration and that approved contract both assert the order.
 - INFO defaults to none. Reject repeated labels or overlays that CLEAN/video can already communicate.
 - Camera motion must be restrained and usable for a four-second image-to-video clip, but it cannot substitute for missing physical state changes.
+- Use narration_expression only for a wording-only defect in exactly one scene's existing source narration row; report that one sceneIndex. Facts, quantities, conditions, physical states and required INFO must already be correct. Never use this code for missing evidence, ambiguous ownership, causal changes or physical/INFO corrections; those remain upstream HOLD findings.
 - If the verified evidence is truly too shallow to sustain the measured narration without repetition, use insufficient_visual_depth as an upstream script/production-contract failure. Do not ask the shotlist revision to reduce the fixed clip count or invent interiors, cutaways, construction details, or hidden load paths.
 - Any error, score below 0.84, repeated_visual_state warning, family_mismatch warning, or insufficient_visual_depth warning must fail.
 
@@ -13900,7 +14798,7 @@ ${JSON.stringify(chunk.map(({ index, key, scene }) => ({ index, key, ...scene })
       );
     }
   };
-  await Promise.all(Array.from({ length: Math.min(2, chunks.length) }, () => runRevisionWorker()));
+  await settleProviderGroup(Array.from({ length: Math.min(2, chunks.length) }, () => runRevisionWorker()));
   const revisedByKey = new Map(revisedChunks.flatMap((chunk) => chunk.scenes || []).map((scene) => (
     [`${scene.sourceSegmentIndex}:${scene.sourceSegmentOrder}`, scene]
   )));
@@ -13958,8 +14856,54 @@ async function runShotlistQualityLoop(topic, script, factCheck, ttsRun, producti
     attempt += 1;
     jobContext?.progress(Math.min(96, 89 + (attempt - 1) * 2), `독립 장면표 검수 ${attempt}: 전체 영상의 물리 상태 전개와 반복 구도를 확인합니다.`);
     review = await reviewShotlistConsensus(topic, script, factCheck, ttsRun, productionBrief, aiResult, jobContext, attempt);
+    review.candidateHash = shotlistRepairHash(aiResult);
     reviews.push(review);
     if (review.passed) break;
+    if (jobContext?.durableShotlistRepair !== undefined) {
+      const upstreamTarget = jobContext.durableShotlistRepair && attempt === 1 && !jobContext.upstreamTransition
+        ? selectUpstreamNarrationTarget(script, aiResult, review) : null;
+      if (upstreamTarget) {
+        const options = isolatedProviderOverrides.getStore();
+        const payload = parseStoredJson(options.job.payload_json, {});
+        if (payload.reviewOnly || payload.scriptRepairLimit === 0 || payload.ttsRepairLimit === 0) throw new Error('upstream_repair:disabled');
+        const outputs = ttsRun.segments.map(segment => {const file=resolveWorkspacePath(segment.audioPath);const audio=readPcmWav(file);return {index:segment.segmentIndex,text:segment.text,path:file,durationSec:audio.durationSec,contentHash:audio.contentHash};});
+        const failureFingerprint = scriptRepairHash({inputHash:options.job.input_revision,target:upstreamTarget,code:'narration_expression'});
+        const result = await repairMeasuredTts(payload, {topic,run:ttsRun,voicePreset:mapVoicePresetRow(getVoicePresetStatement.get(ttsRun.voicePresetId))}, {outputs}, false,
+          {target:upstreamTarget,review,failureFingerprint});
+        jobContext.upstreamTransition = result.inputTransition;
+        Object.assign(script, result.script);
+        Object.assign(ttsRun, mapTtsRunRow(getLatestTtsRunByTopicStatement.get(topic.id)));
+        // Preserve the physical storyboard; only the one source narration anchor
+        // changes. buildAiShotlistItems derives the new measured timeline below.
+        aiResult = structuredClone(aiResult);
+        for (const scene of aiResult.scenes) if (scene.sourceSegmentIndex === upstreamTarget.rowIndex) scene.narrationAnchor = result.inputTransition.narration;
+        review.upstreamRepair = {target:upstreamTarget,failureFingerprint};
+        continue;
+      }
+      const target = jobContext.durableShotlistRepair && attempt === 1 ? selectShotlistRepairTarget(aiResult, review) : null;
+      if (!target) throw new Error(shotlistRepairHoldReason(review, !jobContext.durableShotlistRepair
+        ? "disabled" : attempt > 1 ? "independent_review_failed" : "ambiguous_or_upstream_finding"));
+      jobContext.progress(93, `${target.sceneIndex}번 카메라 표현만 한 번 수정한 뒤 독립 재검수합니다.`);
+      const prompt = `Repair only the identified shot's cameraMotion wording. Return the structured patch, not a shotlist.
+Preserve all facts, quantities, conditions, direction, physical states, narration, measured timing, claims, evidence, IDs, order and INFO. Do not invent motion or change the production contract.
+Patch target:
+${JSON.stringify(target)}
+Current shotlist:
+${JSON.stringify(aiResult)}
+Current review:
+${JSON.stringify(review)}
+Approved upstream context:
+${JSON.stringify({ script, factCheck, ttsRun, productionBrief })}`;
+      const patch = await runCodexJson(prompt, `shotlist-expression-patch-${topic.id}`, 180000, {
+        signal: jobContext.signal, outputSchema: shotlistPatchSchema,
+        models: ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.5"]
+      });
+      aiResult = applyShotlistPatch(aiResult, patch, target);
+      review.localRepair = { ...target, afterHash: shotlistRepairHash(aiResult) };
+      // Do not normalize/enforce again: that can rewrite untargeted fields or
+      // erase the local patch. The fresh whole-sequence consensus is mandatory.
+      continue;
+    }
     if (!shouldContinueQualityRepair(review, attempt, startedAt, QUALITY_AUTO_REPAIR_LIMIT, topic.runLane === "production_canary" ? "autoConverge" : "benchmark")) break;
     jobContext?.progress(Math.min(97, 91 + (attempt - 1) * 2), `품질 수렴 판단: ${review.convergence.reason}`);
     aiResult = enforceShotlistBriefContracts(normalizeAiShotlistInfoPlan(
@@ -14210,6 +15154,7 @@ ${JSON.stringify(assignedSegments, null, 2)}
       }
       let contractIssues = getAiSceneContractIssues(chunkResult.scenes, directionContract);
       if (contractIssues.length) {
+        if (jobContext?.durableShotlistRepair !== undefined) throw new Error(shotlistRepairHoldReason(null, `deterministic_contract_failed:${contractIssues.join(" / ")}`));
         jobContext?.progress(
           16 + Math.round((completedChunks / chunks.length) * 68),
           `${chunkIndex + 1}번 묶음의 화면 방향과 CLEAN 요소를 자동 교정합니다.`
@@ -14346,9 +15291,11 @@ async function generateShotlist(payload, jobContext = null) {
       }
     : previousReview;
   const initialAiResult = payload.remediationRoute === "local_targeted_revision" && previousShotlist?.raw?.aiResult && targetedReview
-    ? enforceShotlistBriefContracts(normalizeAiShotlistInfoPlan(
-      await reviseShotlistWithAi(topic, script, factCheck, ttsRun, productionBrief, previousShotlist.raw.aiResult, targetedReview, jobContext, assetQualityFeedback)
-    ), script, productionBrief)
+    ? jobContext?.durableShotlistRepair !== undefined
+      ? previousShotlist.raw.aiResult
+      : enforceShotlistBriefContracts(normalizeAiShotlistInfoPlan(
+        await reviseShotlistWithAi(topic, script, factCheck, ttsRun, productionBrief, previousShotlist.raw.aiResult, targetedReview, jobContext, assetQualityFeedback)
+      ), script, productionBrief)
     : await designShotlistWithAi(topic, script, factCheck, ttsRun, productionBrief, jobContext, previousShotlist?.raw?.aiResult);
   const qualityResult = await runShotlistQualityLoop(topic, script, factCheck, ttsRun, productionBrief, initialAiResult, jobContext);
   const aiResult = qualityResult.aiResult;
@@ -14937,6 +15884,7 @@ ${JSON.stringify(chunk, null, 2)}
       const result = await runCodexJson(prompt, `info-layout-${topic.id}-${chunkIndex + 1}`, 180000, {
         signal: jobContext?.signal,
         outputSchema: INFO_LAYOUT_OUTPUT_SCHEMA,
+        imagePaths: chunk.map(scene => scene.imagePath),
         models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"],
         onEvent: (event) => {
           if (event.type === "item.completed") jobContext?.progress(22, "실제 화면의 구조·기초·지반 앵커를 찾고 있습니다.");
@@ -14965,6 +15913,7 @@ ${JSON.stringify(chunk, null, 2)}
   const invalidEntries = overlayItems
     .map((item) => ({ item, issues: validateInfoLayout(layoutMap.get(item.sortIndex) || null, item) }))
     .filter((entry) => entry.issues.length);
+  if (jobContext?.durableInfoRepair !== undefined && invalidEntries.length) throw new Error('info_repair:upstream_layout_invalid');
   for (const [repairIndex, entry] of invalidEntries.entries()) {
     const sceneInput = sceneInputs.find((scene) => scene.clipIndex === entry.item.sortIndex);
     const previousLayout = layoutMap.get(entry.item.sortIndex) || null;
@@ -15058,6 +16007,7 @@ ${JSON.stringify({
   const review = await runCodexJson(prompt, `info-visual-review-${topic.id}-${item.sortIndex}-${attempt}-${reviewer.role || "evidence"}`, 180000, {
     signal: jobContext?.signal,
     stage: "info_visual_quality",
+    imagePaths: [cleanPath, infoPath],
     outputSchema: INFO_VISUAL_REVIEW_OUTPUT_SCHEMA,
     models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]
   });
@@ -15196,7 +16146,11 @@ async function saveInfoPrompts(payload, jobContext = null) {
   let shotlist = mapShotlistRow(getLatestShotlistByTopicStatement.get(topicId));
   const representativeGate = assets.representativeGate || summarizeRepresentativeGate(topicId, shotlist, assets.clean, assets.info);
   const scope = String(payload.scope || (representativeGate.enabled ? "sample" : "full"));
-  if (scope === "full" && !assets.cleanReady) {
+  const durableRun = pipelineExecution.getStore()?.job.run_id || isolatedProviderOverrides.getStore()?.job?.run_id;
+  const durableCanary = durableRun && pipelineStore.getRun(durableRun)?.lane === "production_canary";
+  const canaryCleanReady = durableCanary && assets.expectedCount > 0 && assets.clean.length === assets.expectedCount
+    && assets.clean.every(asset => isPipelineAssetReady(asset, "production_canary"));
+  if (scope === "full" && !assets.cleanReady && !canaryCleanReady) {
     throw new Error("전체 INFO 생성 전 모든 CLEAN 이미지의 실제 화면 검수와 승인이 필요합니다.");
   }
   const projectDir = await ensureProjectFolders(topicId);
@@ -15211,6 +16165,7 @@ async function saveInfoPrompts(payload, jobContext = null) {
   const revisionInstruction = String(payload.revisionInstruction || "").trim().slice(0, 2000);
   let replanned = false;
   if (isInfoPlanStale(shotlist)) {
+    if (payload.cleanRepairId) throw new Error('clean_repair_info_plan_stale');
     if (revisionInstruction) {
       throw new Error("기존 INFO 의미 설계가 구버전입니다. 먼저 오른쪽 위의 INFO 다시 설계·생성을 실행하세요.");
     }
@@ -15229,7 +16184,7 @@ async function saveInfoPrompts(payload, jobContext = null) {
     asset.status
   ]));
   const blockedCleanIndexes = targetItems
-    .filter((item) => scope === "sample"
+    .filter((item) => scope === "sample" || canaryCleanReady
       ? !isAiVerifiedAssetStatus(cleanStatusByIndex.get(item.sortIndex))
       : cleanStatusByIndex.get(item.sortIndex) !== "OK")
     .map((item) => item.sortIndex);
@@ -15243,7 +16198,7 @@ async function saveInfoPrompts(payload, jobContext = null) {
   const promptPath = path.join(projectDir, "prompts", "INFOGRAPHIC_KEYFRAME_PROMPTS.md");
   const specPath = path.join(projectDir, "manifests", "INFO_OVERLAY_SPECS.json");
   const updateInfoPromptStatement = db.prepare("UPDATE shotlist_items SET info_prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-  for (const item of shotlist.items) {
+  for (const item of payload.cleanRepairId ? targetItems : shotlist.items) {
     item.infoPrompt = buildInfoPrompt({
       topic,
       row: {
@@ -15295,6 +16250,7 @@ async function saveInfoPrompts(payload, jobContext = null) {
     .filter((item) => item.infoSpec?.type !== "none")
     .map((item) => ({ item, issues: validateInfoLayout(layoutByIndex.get(item.sortIndex) || null, item) }))
     .filter((entry) => entry.issues.length);
+  if (payload.cleanRepairId && invalidLayouts.length) throw new Error('clean_repair_info_layout_failed');
   const invalidComparisonLayouts = invalidLayouts.filter(({ item }) => item.infoSpec?.type === "comparison" && item.infoSpec?.requiresOverlay !== true);
   if (invalidComparisonLayouts.length) {
     const updateInfoSpec = db.prepare("UPDATE shotlist_items SET info_spec_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
@@ -15407,6 +16363,7 @@ async function saveInfoPrompts(payload, jobContext = null) {
       attempt,
       jobContext
     });
+    autoQc.mechanicalPassed = autoQc.passed === true;
     autoQc.independentSemantic = semanticReview;
     autoQc.shotlistId = shotlist.id;
     autoQc.sceneId = item.sceneId;
@@ -15438,6 +16395,13 @@ async function saveInfoPrompts(payload, jobContext = null) {
     const overlayPath = path.join(infoDir, `${item.fileStub}_INFO_OVERLAY.png`);
     const guidesPath = path.join(infoDir, `${item.fileStub}_INFO_GUIDES.png`);
     const labelsPath = path.join(infoDir, `${item.fileStub}_INFO_LABELS.png`);
+    if (payload.cleanRepairId) {
+      const job = isolatedProviderOverrides.getStore()?.job;
+      const repair = job && pipelineStore.cleanRepairs(job.run_id).find(row => row.id === payload.cleanRepairId);
+      const previous = repair && pipelineStore.artifacts(job.run_id).find(row => row.id === parseStoredJson(repair.contract_json, {}).beforeInfoArtifactId);
+      if (!PIPELINE_PROVIDER_WORKER || !repair || job.operation_kind !== 'clean_repair_info' || repair.clip_key !== String(item.sortIndex)
+        || !previous || !existsSync(outputPath) || createHash('sha256').update(readFileSync(outputPath)).digest('hex') !== previous.content_hash) throw new Error('clean_repair_info_before_changed');
+    } else if (existsSync(outputPath)) assertDurableArtifactReusable(outputPath, "info", item.sortIndex);
     const existingInfoQc = readAssetQc(outputPath);
     if (!payload.force && !replanned && existsSync(outputPath) && existsSync(overlayPath) && existsSync(guidesPath) && existsSync(labelsPath)
       && existingInfoQc.passed === true && isAssetCurrentForShotlist(existingInfoQc, shotlist.id)) {
@@ -15450,7 +16414,29 @@ async function saveInfoPrompts(payload, jobContext = null) {
     let qualityCycle = 1;
     let renderResult = await renderInfoItem(item, layout, targetOffset, qualityCycle);
     infoReviews.push(renderResult.semanticReview);
-    while (!renderResult.autoQc.passed
+    if (jobContext?.durableInfoRepair === true && !renderResult.autoQc.passed && !renderResult.semanticReview?.passed) {
+      const cleanPath = path.join(cleanDir, `${item.fileStub}_CLEAN.png`);
+      const contract = { clipIndex: item.sortIndex, spec: item.infoSpec, claimRefs: item.claimRefs,
+        layout: renderResult.layout, cleanHash: createHash('sha256').update(readFileSync(cleanPath)).digest('hex') };
+      const target = selectInfoRepairTarget(contract, renderResult.semanticReview);
+      if (!target || !renderResult.autoQc.mechanicalPassed || jobContext.infoRepairAttempted) throw new Error('info_repair:ambiguous_or_limit_reached');
+      // This attempt cannot patch again, even when the same finding recurs.
+      jobContext.infoRepairAttempted = target.failureFingerprint;
+      const patch = await runCodexJson(`Correct only the label positions of this one INFO overlay. Inspect ${outputPath} and ${cleanPath} with view_image. Do not edit files. Preserve spec, labels, claims, guide geometry, directions and required INFO. Return only the bounded patch.\nContract: ${JSON.stringify(contract)}\nTarget: ${JSON.stringify(target)}\nReview: ${JSON.stringify(renderResult.semanticReview)}`, `info-layout-patch-${topic.id}-${item.sortIndex}`, 180000, {
+        signal: jobContext.signal, outputSchema: infoLayoutPatchSchema, models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.5']
+      });
+      layout = applyInfoLayoutPatch(contract, patch, target);
+      jobContext.signal?.throwIfAborted();
+      if (infoRepairHash({ ...contract, spec: item.infoSpec, claimRefs: item.claimRefs,
+        cleanHash: createHash('sha256').update(readFileSync(cleanPath)).digest('hex') }) !== target.beforeHash) throw new Error('info_repair:input_changed');
+      renderResult = await renderInfoItem(item, layout, targetOffset, ++qualityCycle);
+      if (createHash('sha256').update(readFileSync(cleanPath)).digest('hex') !== contract.cleanHash) throw new Error('info_repair:clean_pixels_changed');
+      infoReviews.push(renderResult.semanticReview);
+      await writeFile(`${outputPath}.repair.json`, JSON.stringify({ version: 1, target, patch, reviews: infoReviews, cleanHash: contract.cleanHash, passed: renderResult.autoQc.passed }, null, 2));
+      if (!renderResult.autoQc.passed) throw new Error('info_repair:independent_review_failed');
+      layoutByIndex.set(item.sortIndex, layout);
+    }
+    while (jobContext?.durableInfoRepair === undefined && !payload.cleanRepairId && !renderResult.autoQc.passed
       && !renderResult.semanticReview?.passed
       && shouldContinueQualityRepair(renderResult.semanticReview, qualityCycle, qualityStartedAt, 1, topic.runLane === "production_canary" ? "autoConverge" : "benchmark")) {
       const review = renderResult.semanticReview;
@@ -15939,6 +16925,96 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname.startsWith("/api/pipeline/") && !pipelineStore) {
+      sendJson(res, 503, { error: "durable_pipeline_disabled" });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/pipeline/batches") {
+      const payload = await readBody(req);
+      try {
+        const ids = payload.existingTopicIds;
+        if (!Array.isArray(ids) || !ids.length || ids.length > 3 || ids.some(id => !Number.isSafeInteger(id) || id <= 0)
+          || new Set(ids).size !== ids.length || typeof payload.requestKey !== "string" || !payload.requestKey) throw new Error("invalid batch contract");
+        validateBatchStartContract(payload.startContract);
+        const topics = ids.map(id => getTopicStatement.get(id));
+        if (topics.some(topic => !topic)) throw new Error("existing_topic_not_found");
+        const lane = payload.lane || (topics.every(topic => topic.runLane === "production_canary") ? "production_canary" : "manual");
+        if (!["manual", "production_canary"].includes(lane) || lane === "production_canary" && topics.some(topic => topic.runLane !== "production_canary")) throw new Error("invalid batch lane");
+        const budgets = { maxInvocations: payload.maxInvocations ?? 60, maxAttempts: payload.maxAttempts ?? 80, maxElapsedMs: payload.maxElapsedMs ?? 45 * 60000 };
+        if (Object.entries(budgets).some(([key, value]) => !Number.isSafeInteger(value) || value <= 0 || value > ({ maxInvocations: 60, maxAttempts: 80, maxElapsedMs: 45 * 60000 })[key])) throw new Error("invalid budget");
+        const existing = db.prepare("SELECT * FROM pipeline_batches WHERE request_key = ?").get(payload.requestKey);
+        if (!existing && ids.some(id => { const blocker = pipelineTopicBlocker(id); return blocker.run || blocker.batch; })) {
+          sendJson(res, 409, { error: "topic_pipeline_active" }); return;
+        }
+        const savedCandidates = existing ? JSON.parse(existing.candidates_json) : [];
+        const candidates = ids.map((topicId, index) => ({ topicId, startContract: payload.startContract,
+          inputHash: existing ? savedCandidates[index]?.inputHash || "mismatch" : pipelineInputRevision(topicId, "script") }));
+        const batch = pipelineStore.transaction(() => {
+          const created = pipelineStore.createBatch({ requestKey: payload.requestKey, lane, candidates, ...budgets });
+          if (!existing) enqueueBatchCandidate(created.id);
+          return pipelineStore.getBatch(created.id);
+        });
+        scheduleAiWorkers();
+        sendJson(res, existing ? 200 : 202, { batch, runs: pipelineStore.batchRuns(batch.id) });
+      } catch (error) {
+        sendJson(res, error.message === "request_key_contract_mismatch" ? 409 : 400, { error: error.message });
+      }
+      return;
+    }
+    const batchRoute = url.pathname.match(/^\/api\/pipeline\/batches\/([^/]+)(\/cancel)?$/u);
+    if (batchRoute && (req.method === "GET" && !batchRoute[2] || req.method === "POST" && batchRoute[2])) {
+      const batchId = decodeURIComponent(batchRoute[1]);
+      if (!pipelineStore.getBatch(batchId)) { sendJson(res, 404, { error: "batch_not_found" }); return; }
+      const batch = req.method === "POST" ? pipelineStore.cancelBatch(batchId) : pipelineStore.getBatch(batchId);
+      sendJson(res, 200, { batch, runs: pipelineStore.batchRuns(batchId) });
+      return;
+    }
+    const topicPipelineRoute = url.pathname.match(/^\/api\/pipeline\/topics\/(\d+)$/u);
+    if (req.method === "GET" && topicPipelineRoute) {
+      const topicId = Number(topicPipelineRoute[1]);
+      if (!getTopicStatement.get(topicId)) { sendJson(res, 404, { error: "topic_not_found" }); return; }
+      sendJson(res, 200, await pipelineTopicStatus(topicId));
+      return;
+    }
+    const cleanRepairRoute = url.pathname.match(/^\/api\/pipeline\/runs\/([^/]+)\/clean-repairs$/u);
+    if (req.method === 'POST' && cleanRepairRoute) {
+      try {
+        const result = await requestDurableCleanRepair({ ...await readBody(req), runId:decodeURIComponent(cleanRepairRoute[1]) });
+        scheduleAiWorkers();
+        sendJson(res,result.reused ? 200 : 202,result);
+      } catch(error) { sendJson(res,409,{error:error.message}); }
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/pipeline/runs") {
+      const payload = await readBody(req);
+      const topicId = Number(payload.topicId);
+      const topic = Number.isSafeInteger(topicId) ? getTopicStatement.get(topicId) : null;
+      if (!topic || typeof payload.requestKey !== "string" || !payload.requestKey.trim()) { sendJson(res, 400, { error: "topicId와 idempotency requestKey가 필요합니다." }); return; }
+      if (payload.batchId != null) { sendJson(res, 400, { error: "batch_run_requires_startNextCandidate" }); return; }
+      const lane = payload.lane || (topic.runLane === "production_canary" ? "production_canary" : "manual");
+      if (!["manual", "production_canary"].includes(lane) || lane === "production_canary" && topic.runLane !== "production_canary") { sendJson(res, 400, { error: "invalid_run_lane" }); return; }
+      const existing = db.prepare("SELECT * FROM pipeline_runs WHERE request_key = ?").get(payload.requestKey);
+      if (existing && (existing.topic_id !== topicId || existing.lane !== lane)) { sendJson(res, 409, { error: "request_key_contract_mismatch" }); return; }
+      const blocker = pipelineTopicBlocker(topicId);
+      if (!existing && (blocker.run || blocker.batch)) { sendJson(res, 409, { error: "topic_pipeline_active", ...blocker }); return; }
+      const run = existing || pipelineStore.transaction(() => {
+        const created = pipelineStore.createRun({ topicId, lane, requestKey: payload.requestKey, inputHash: pipelineInputRevision(topicId, "script") });
+        pipelineStore.enqueue(created.id, { stage: "continue", type: "pipeline_continue", scope: "initial", operation: "advance", inputHash: created.input_hash });
+        return created;
+      });
+      scheduleAiWorkers();
+      sendJson(res, existing ? 200 : 202, { run, jobs: pipelineStore.jobs(run.id).map(mapJobRow) });
+      return;
+    }
+    const pipelineRoute = url.pathname.match(/^\/api\/pipeline\/runs\/([^/]+)(\/cancel)?$/u);
+    if (pipelineRoute && (req.method === "GET" || (req.method === "POST" && pipelineRoute[2]))) {
+      const runId = decodeURIComponent(pipelineRoute[1]);
+      if (!pipelineStore.getRun(runId)) { sendJson(res, 404, { error: "run_not_found" }); return; }
+      const run = req.method === "POST" ? pipelineStore.cancel(runId) : pipelineStore.getRun(runId);
+      sendJson(res, 200, { run, jobs: pipelineStore.jobs(runId).map(mapJobRow), artifacts: pipelineStore.activeArtifacts(runId), artifactHistory:pipelineStore.artifacts(runId), cleanRepairs:pipelineStore.cleanRepairs(runId) });
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/jobs") {
       sendJson(res, 200, listJobs(url));
       return;
@@ -16197,9 +17273,87 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Cinematic Shorts dashboard: http://localhost:${PORT}`);
+// Explicit exports are exercised only in isolated subprocesses; library imports
+// of pipeline-store/runner themselves never bootstrap the application.
+async function runIsolatedProvider(stage, payload, options = {}) {
+  if (!PIPELINE_PROVIDER_WORKER) throw new Error("isolated_provider_worker_only");
+  options.signal?.throwIfAborted();
+  if (["script", "tts"].includes(stage) && !options.voxProvider && process.env.DINOBOX_ISOLATED_MOCK_PROVIDER !== "1") {
+    durableLocalTtsEnvironment(process.env, __dirname, DATA_DIR);
+  }
+  const run = options.job?.run_id ? pipelineStore.getRun(options.job.run_id) : null;
+  const context = { signal: options.signal, inputSnapshot: payload.inputSnapshot,
+    durableNarrationRepair: stage === "script" ? run?.lane === "production_canary" && payload.reviewOnly !== true && payload.scriptRepairLimit !== 0 : undefined,
+    durableShotlistRepair: stage === "shotlist" ? run?.lane === "production_canary" && payload.reviewOnly !== true && payload.shotlistRepairLimit !== 0 : undefined,
+    durableInfoRepair: stage === "info" ? run?.lane === "production_canary" && payload.reviewOnly !== true && payload.infoRepairLimit !== 0 && !payload.cleanRepairId : undefined,
+    progress() { options.signal?.throwIfAborted(); } };
+  return isolatedProviderOverrides.run(options, async () => {
+    let result;
+    if (stage === "script") {
+      result = await generateScript(payload, context);
+      const finalReview = result.script?.qualityReviews?.at(-1);
+      if (!finalReview?.passed) throw new Error("native_script_quality_not_passed");
+    } else if (stage === "tts") result = await generateTts(payload);
+    else if (stage === "shotlist") {
+      result = await generateShotlist(payload, context);
+      if (result.shotlist?.raw?.qualityStatus !== "passed") throw new Error("native_shotlist_quality_not_passed");
+      if (result.topic?.runLane === "production_canary") result = await approveCanaryShotlistWithAi({ topicId: payload.topicId });
+    } else if (stage === "clean") result = await generateCleanImage({ ...payload, clipIndex: Number(options.job?.scope_key || payload.clipIndex) }, context);
+    else if (stage === "info") result = await saveInfoPrompts(payload, context);
+    else throw new Error("unsupported_staged_provider");
+    options.signal?.throwIfAborted();
+    const outcome = { ...result, ...(context.upstreamTransition ? {inputTransition:context.upstreamTransition} : {}), execution: "succeeded", quality: stage === "tts" && result.run?.status !== "generated" ? "revise" : "pass",
+      providerFixture: process.env.DINOBOX_ISOLATED_MOCK_PROVIDER === "1" };
+    if (["script", "tts", "shotlist"].includes(stage)) validateDurableUpstreamResult({ pipeline_stage: stage, topic_id: Number(payload.topicId) }, outcome);
+    return outcome;
+  });
+}
+
+async function collectIsolatedStageOutcome(job, result) {
+  if (!PIPELINE_PROVIDER_WORKER) throw new Error("isolated_provider_worker_only");
+  if (["script", "tts", "shotlist"].includes(job.pipeline_stage)) validateDurableUpstreamResult(job, result);
+  const artifacts = [];
+  if (["clean", "info"].includes(job.pipeline_stage)) {
+    const assets = await listProjectAssetsForTopic(job.topic_id);
+    const shotlist = getTopicDetailById(job.topic_id).shotlist;
+    const selected = job.pipeline_stage === "clean" ? assets.clean.filter(asset => Number(asset.name.match(/^(\d+)/u)?.[1]) === Number(job.scope_key))
+      : job.payload?.cleanRepairId ? assets.info.filter(asset => Number(asset.name.match(/^(\d+)/u)?.[1]) === Number(job.scope_key)) : assets.info;
+    const expected = job.pipeline_stage === "clean" || job.payload?.cleanRepairId ? 1 : assets.expectedCount;
+    if (!expected || selected.length !== expected) throw new Error("artifact_count_mismatch");
+    for (const asset of selected) {
+      const clip = Number(asset.name.match(/^(\d+)/u)?.[1]);
+      const item = shotlist.items.find(entry => entry.sortIndex === clip);
+      const original = job.payload?.inputSnapshot?.providerContext?.initialShotlistItems?.find(entry => entry.sortIndex === clip);
+      if (!isAiVerifiedAssetStatus(asset.status) || asset.autoQc?.passed !== true || asset.autoQc?.stale) throw new Error("artifact_quality_failed");
+      const requiredOverlay = job.pipeline_stage === "info" && (item?.infoSpec?.requiresOverlay === true || original?.infoSpec?.requiresOverlay === true);
+      if (requiredOverlay && (!item?.infoSpec?.type || item.infoSpec.type === "none")) throw new Error("required_info_missing");
+      const outputPath = path.resolve(__dirname, asset.path);
+      const renderPath = outputPath.replace(/_INFO\.png$/u, "_INFO_RENDER.json");
+      const infoEvidence = job.pipeline_stage === "info" && existsSync(renderPath) ? {
+        renderPath, overlayPath: outputPath.replace(/_INFO\.png$/u, "_INFO_OVERLAY.png"),
+        guidesPath: outputPath.replace(/_INFO\.png$/u, "_INFO_GUIDES.png"), labelsPath: outputPath.replace(/_INFO\.png$/u, "_INFO_LABELS.png")
+      } : undefined;
+      const repair = job.payload?.cleanRepairId ? pipelineStore.cleanRepairs(job.run_id).find(row => row.id === job.payload.cleanRepairId) : null;
+      artifacts.push({ path: outputPath, clip, kind: job.pipeline_stage, inputHash: job.input_revision,
+        quality: "pass", freshness: "current", userApproval: asset.status === "OK" ? "approved" : "pending", requiredOverlay, overlayType: item?.infoSpec?.type,
+        ...(repair ? { cleanRepairId:repair.id, supersedesArtifactId:job.pipeline_stage === 'clean' ? repair.before_artifact_id : parseStoredJson(repair.contract_json, {}).beforeInfoArtifactId } : {}),
+        infoEvidence, providerFixture: process.env.DINOBOX_ISOLATED_MOCK_PROVIDER === "1" });
+    }
+  }
+  return { result, artifacts };
+}
+
+export { server, db, pipelineStore, enqueueAiJob, claimNextAiJob, executeDurablePipelineJob, runIsolatedProvider, collectIsolatedStageOutcome,
+  revisePipelineTiming, getPipelineVisualReuseState, pipelineInputSnapshot, pipelineInputRevision, pipelineTopicStatus, requestDurableCleanRepair, reviewAsset,
+  getTopicDetailById, reviewCleanImageConsensus, reviewInfoImageConsensus, inspectImageAsset, planInfoLayouts };
+
+if (!PIPELINE_PROVIDER_WORKER) server.listen(PORT, () => {
+  console.log(`Cinematic Shorts dashboard: http://localhost:${server.address().port}`);
   if (!DISABLE_BACKGROUND_WORKERS) {
+    if (pipelineStore) {
+      pipelineStore.recover();
+      setInterval(() => { pipelineStore.recover(); scheduleAiWorkers(); }, 5000).unref();
+    }
     recoverCompletedBenchmarkFactChecks();
     queueMicrotask(scheduleAiWorkers);
     if (!DISABLE_AUTOMATIC_REMEDIATION) queueMicrotask(maintainBenchmarkRemediationQueue);

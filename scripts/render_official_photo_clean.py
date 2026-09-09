@@ -41,6 +41,8 @@ def parse_panel_sequence(value):
             raise argparse.ArgumentTypeError("panelSequence entries require panelCrop")
         panels.append({
             "crop": crop,
+            "focus": parse_normalized_bounds(panel.get("focusBounds"), f"panelSequence[{index}].focusBounds"),
+            "required": parse_normalized_bounds(panel.get("requiredBounds"), f"panelSequence[{index}].requiredBounds"),
             "declares_source": any(str(panel.get(key) or "").strip() for key in ("referenceId", "sourceUrl", "mediaUrl")),
         })
     return panels
@@ -49,7 +51,8 @@ def parse_panel_sequence(value):
 def parse_args():
     parser = argparse.ArgumentParser(description="Render an official still as a deterministic 9:16 crop or declared two-panel explanatory diagram.")
     parser.add_argument("input")
-    parser.add_argument("output")
+    parser.add_argument("output", nargs="?")
+    parser.add_argument("--preflight", action="store_true", help="Decode and check shared crop geometry only; never write an output")
     parser.add_argument("--crop-json", help="JSON object containing panelCrop/focusBounds/panelSequence or a normalized bounds array")
     parser.add_argument("--panel-crop", help="normalized JSON [x,y,width,height]")
     parser.add_argument("--focus-bounds", help="normalized JSON [x,y,width,height]")
@@ -69,26 +72,77 @@ def parse_args():
         panel_crop = parse_normalized_bounds(args.panel_crop if args.panel_crop else metadata.get("panelCrop"), "panelCrop")
         focus_bounds = parse_normalized_bounds(args.focus_bounds if args.focus_bounds else metadata.get("focusBounds"), "focusBounds")
         panel_sequence = parse_panel_sequence(metadata.get("panelSequence"))
+        required_bounds = parse_normalized_bounds(metadata.get("requiredBounds"), "requiredBounds")
     except argparse.ArgumentTypeError as exc:
         parser.error(str(exc))
     if args.panel_sequence_inputs and not panel_sequence:
         parser.error("--panel-sequence-inputs requires panelSequence")
     if panel_sequence and any(panel["declares_source"] for panel in panel_sequence) and not args.panel_sequence_inputs:
         parser.error("panelSequence with referenceId/sourceUrl/mediaUrl requires --panel-sequence-inputs")
-    return args.input, args.output, panel_crop or focus_bounds, panel_sequence, args.panel_sequence_inputs
+    if panel_sequence and (panel_crop or focus_bounds or required_bounds):
+        parser.error("HOLD official_crop_ambiguous: sequence bounds must be declared per panel")
+    if not args.preflight and not args.output:
+        parser.error("output is required unless --preflight is used")
+    return args.input, args.output, panel_crop or focus_bounds, focus_bounds, required_bounds, panel_sequence, args.panel_sequence_inputs, args.preflight
 
 
-def crop_to_bounds(image, bounds):
-    if not bounds:
-        return image
-    x, y, width, height = bounds
-    left = round(x * image.width)
-    top = round(y * image.height)
-    right = round((x + width) * image.width)
-    bottom = round((y + height) * image.height)
-    if right <= left or bottom <= top:
-        raise ValueError("normalized crop resolves to an empty source region")
-    return image.crop((left, top, right, bottom))
+def bounds_box(image, bounds):
+    x, y, width, height = bounds or (0, 0, 1, 1)
+    box = (round(x * image.width), round(y * image.height),
+           round((x + width) * image.width), round((y + height) * image.height))
+    if box[2] <= box[0] or box[3] <= box[1]:
+        raise ValueError("HOLD official_crop_empty: normalized crop resolves to an empty source region")
+    return box
+
+
+def required_box(image, selected, bounds):
+    if bounds:
+        x, y, width, height = bounds
+        box = (x * image.width, y * image.height, (x + width) * image.width, (y + height) * image.height)
+    else:
+        box = selected
+    if box[0] < selected[0] or box[1] < selected[1] or box[2] > selected[2] or box[3] > selected[3]:
+        raise ValueError("HOLD official_crop_outside_panel: declared bounds extend outside selected panel")
+    return box
+
+
+def cover_box(image, bounds, focus_bounds, required_bounds):
+    # focusBounds remains the legacy fallback crop, not a semantic required-elements map.
+    selected = bounds_box(image, bounds)
+    required = required_box(image, selected, required_bounds)
+    if focus_bounds:
+        focus = required_box(image, selected, focus_bounds)
+        required = (min(required[0], focus[0]), min(required[1], focus[1]),
+                    max(required[2], focus[2]), max(required[3], focus[3]))
+    left, top, right, bottom = selected
+    width, height = right - left, bottom - top
+    crop_width = min(width, height * WIDTH / HEIGHT)
+    crop_height = min(height, width * HEIGHT / WIDTH)
+    # Subpixel aspect mismatch is raster rounding, not permission to drop an edge pixel.
+    if width - crop_width < 1 and height - crop_height < 1:
+        return selected
+    if required[2] - required[0] > crop_width or required[3] - required[1] > crop_height:
+        reason = "official_crop_required_bounds_infeasible" if required_bounds else "official_crop_required_bounds_missing"
+        raise ValueError(f"HOLD {reason}: full-bleed cover would discard declared source region; provide verified requiredBounds or a different source")
+    x_min, x_max = max(left, required[2] - crop_width), min(right - crop_width, required[0])
+    y_min, y_max = max(top, required[3] - crop_height), min(bottom - crop_height, required[1])
+    x = min(max(left + (width - crop_width) / 2, x_min), x_max)
+    y = min(max(top + (height - crop_height) / 2, y_min), y_max)
+    return x, y, x + crop_width, y + crop_height
+
+
+def render_cover(image, bounds, focus_bounds, required_bounds):
+    box = cover_box(image, bounds, focus_bounds, required_bounds)
+    if box == bounds_box(image, bounds):
+        return image.crop(box).resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
+    return image.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS, box=box)
+
+
+def panel_box(image, panel_contract):
+    selected = bounds_box(image, panel_contract["crop"])
+    required_box(image, selected, panel_contract.get("required"))
+    required_box(image, selected, panel_contract.get("focus"))
+    return selected
 
 
 def render_two_panel_sequence(images, panel_sequence):
@@ -98,7 +152,8 @@ def render_two_panel_sequence(images, panel_sequence):
     panel_height = (HEIGHT - gap) // 2
     rendered = Image.new("RGB", (WIDTH, HEIGHT), "black")
     for index, (image, panel_contract) in enumerate(zip(images, panel_sequence)):
-        panel = crop_to_bounds(image, panel_contract["crop"])
+        selected = panel_box(image, panel_contract)
+        panel = image.crop(selected)
         fitted = ImageOps.contain(panel, (WIDTH, panel_height), method=Image.Resampling.LANCZOS)
         x = (WIDTH - fitted.width) // 2
         y = index * (panel_height + gap) + (panel_height - fitted.height) // 2
@@ -112,22 +167,30 @@ def load_official_image(source):
 
 
 def main() -> None:
-    source_arg, output_arg, bounds, panel_sequence, panel_sequence_inputs = parse_args()
+    source_arg, output_arg, bounds, focus_bounds, required_bounds, panel_sequence, panel_sequence_inputs, preflight = parse_args()
     source = Path(source_arg).resolve()
+    source_paths = [Path(value).resolve() for value in (panel_sequence_inputs or ([source, source] if panel_sequence else [source]))]
+    images = [load_official_image(path) for path in source_paths]
+    if preflight:
+        # Only these known geometry failures authorize candidate replacement. Decode,
+        # argument, dependency and unexpected code failures retain their nonzero exit.
+        try:
+            boxes = ([panel_box(image, panel) for image, panel in zip(images, panel_sequence)]
+                     if panel_sequence else [cover_box(images[0], bounds, focus_bounds, required_bounds)])
+        except ValueError as exc:
+            code = str(exc).split(":", 1)[0].removeprefix("HOLD ")
+            if code not in {"official_crop_empty", "official_crop_outside_panel",
+                            "official_crop_required_bounds_infeasible", "official_crop_required_bounds_missing"}:
+                raise
+            print(json.dumps({"version": 1, "geometryOnly": True, "passed": False, "code": code}))
+            return
+        print(json.dumps({"version": 1, "geometryOnly": True, "passed": True, "boxes": boxes,
+                          "sourceSizes": [image.size for image in images]}))
+        return
     output = Path(output_arg).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-
-    if panel_sequence:
-        source_paths = [Path(value).resolve() for value in (panel_sequence_inputs or [source, source])]
-        rendered = render_two_panel_sequence([load_official_image(path) for path in source_paths], panel_sequence)
-    else:
-        official = load_official_image(source)
-        rendered = ImageOps.fit(
-            crop_to_bounds(official, bounds),
-            (WIDTH, HEIGHT),
-            method=Image.Resampling.LANCZOS,
-            centering=(0.5, 0.5),
-        )
+    rendered = (render_two_panel_sequence(images, panel_sequence) if panel_sequence
+                else render_cover(images[0], bounds, focus_bounds, required_bounds))
     rendered.save(output, "PNG", optimize=True)
 
 

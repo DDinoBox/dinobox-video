@@ -6,6 +6,7 @@ tmp/
 
 data/
 projects/
+models/
 tools/downloads/
 tools/ffmpeg/
 tools/comfyui-h3/

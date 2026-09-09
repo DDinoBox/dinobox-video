@@ -601,10 +601,10 @@ test("script cache, INFO requirements, and auto convergence stay contract-bound"
   assert.match(server, /function enqueuePipelineSuccessor/);
   assert.match(server, /const ttsRun = mapTtsRunRow\(getLatestTtsRunByTopicStatement\.get\(topicId\)\)/);
   assert.match(server, /ttsRun,\n    shotlistId: shotlist\?\.id \|\| null/);
-  assert.match(server, /recordCanaryAiPass\(\{ topicId: job\.topicId, reviewer: "pipeline_auto_converge" \}\)/);
+  assert.match(server, /recordCanaryAiPass\(\{ topicId: job\.topic_id, reviewer: "pipeline_auto_converge" \}\)/);
   assert.match(server, /detail\.script\.status === "approved"[\s\S]*?detail\.script\.status === "draft" && canaryHasAiPass/);
-  assert.match(server, /const pipeline = \{ stage: next\.stage, inputHash: next\.inputHash \}/);
-  assert.match(server, /blocked: "quality_not_passed"/);
+  assert.match(server, /pipelineStore\.enqueue\(run\.id/);
+  assert.match(server, /reason: "shotlist_quality_not_passed"/);
   assert.match(server, /const autoConverge = payload\.autoConverge === true/);
   assert.match(server, /source: autoConverge \? "pipeline_auto_converge" : "quality_benchmark_remediation"/);
   assert.match(server, /autoConverge: true, pipeline: payload\.pipeline \|\| null/);
@@ -619,8 +619,8 @@ test("script cache, INFO requirements, and auto convergence stay contract-bound"
   assert.match(server, /await Promise\.all\(reviewerRoles\.slice\(0, 2\)/);
   assert.match(server, /json_extract\(details_json, '\$\.narrationHash'\) = \? LIMIT 1/);
   assert.match(server, /const repeatedNarration = Boolean\(measuredOverruns\.length && priorOverrun\)/);
-  assert.match(server, /job\.type === "tts_generate" && next\.stage === "tts"/);
-  assert.match(server, /hold: "measured_tts_unresolved"/);
+  assert.match(server, /stageOrder\.indexOf\(next\.stage\) <= stageOrder\.indexOf\(previousStage\)/);
+  assert.match(server, /quality_or_approval_unresolved/);
 });
 
 test("production brief reviewer findings persist with the hold decision", () => {

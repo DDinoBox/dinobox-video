@@ -1,7 +1,7 @@
 # 최종 재구축 계획 — 공학 쇼츠 자동 제작
 
 작성·공식 자료 조회: 2026-09-05
-상태: **계획 제안. 백업과 현 상태 Git 업로드만 실행했으며 재구축은 시작하지 않았다.**
+상태: **2026-09-05 사용자 승인 후 재구축 진행 중. 라이브 DB migration·실물 AI/H3 생성은 실행하지 않았다.**
 기준 소스: `5c42f01d1099e838d12108e8dc31ee2a2dba1a38`
 관련 인계: `docs/GPT6_AUTOMATION_HANDOFF_KR.md`
 
@@ -291,11 +291,18 @@ DB/파일/QC/run 상태가 일치하고 **새 run 및 부모 batch 범위**의 a
 ```bash
 node --check server.js
 TMP="$PWD/tmp" TEMP="$PWD/tmp" TMPDIR="$PWD/tmp" npm test
+npm run pipeline:test
+npm run pipeline:audit
 npm run quality:report
+node --test test/pipeline-verification.test.js
 git diff --check
 ```
 
-향후 추가할 명령은 M0/M4에서 구현한 뒤 문서화한다. 아직 없는 `pipeline:test` 같은 npm script가 실행 가능하다고 보고하지 않는다.
+`pipeline:audit`는 읽기 전용이며 발견 사항이 있으면 exit 1, DB/쿼리 접근 오류는 exit 2다. 과거 실패가 남아 있는 운영 데이터에서 exit 1은 테스트 실행 실패와 구분한다.
+
+신규 읽기 전용 수용검사: `node scripts/verify-pipeline-run.mjs --db <DB> --contract <JSON> [--root <프로젝트>] [--python <격리 Python>]`. 운영 DB 기본값은 없다. 계약에는 `version: 1`, `runId`, 최초 `runInputHash`, 최신 `stageInputHashes.clean/info`, `clips` 배열을 명시한다. 각 clip은 `key`, `requiredOverlay`, 이에 일치하는 `infoSpec.requiresOverlay`, `infoSpec`, `claimRefs`, `layoutTrusted`를 포함한다. INFO의 `infoEvidence`에는 renderer가 만든 `overlayPath`, `guidesPath`, `labelsPath`, `renderPath`가 필요하며 artifact metadata 또는 clip 계약에서 제공한다. 최신 입력 hash와 required 조건은 생성 결과를 보고 낮춰 잡지 않고 확정된 입력 계약에서 가져온다. 타이밍만 변경한 이미지의 재사용을 검사하려면 `currentInputSnapshots.clean/info`도 제공한다. 검사기는 최신 generation hash, 발행 job의 원본 snapshot hash, 양쪽 visual fingerprint와 immutable manifest의 versioned binding이 모두 일치할 때만 재사용을 인정한다. binding 없는 legacy 결과를 자동 승격하지 않으며 인정한 항목은 `reusedVisualArtifacts`에 표시한다.
+
+검사기는 run의 ledger·manifest·실제 파일 hash·이미지 decode·픽셀 QC를 확인한다. 부모 batch가 있으면 모든 이전 후보의 작업·attempt·호출 회계·최초 deadline·후보 순서/입력·금지 영상 작업·미종료 invocation까지 검사하며, 초기 batch 계약보다 장면/필수 INFO 수를 줄일 수 없다. 선택적으로 계약에 `batchId`를 고정하면 DB 연결과 일치하는지도 검사한다. scope는 `single_run_ledger_and_media` 또는 `batch_ledger_and_selected_run_media`로 구분한다. PNG 헤더나 저장된 PASS만으로 통과시키지 않는다. exit 0도 `machinePassed`일 뿐, 실제 물리 주장·시각 품질·사용자 승인의 통과를 뜻하지 않는다. 항상 `visualReviewRequired: true`를 유지한다.
 
 필수 crash matrix:
 
@@ -316,13 +323,57 @@ git diff --check
 
 확정할 실행 순서: **M0 → M1 → M2 → M3 → M4 → 별도 승인 후 M5**.
 
-- 이번 산출물은 계획이다. 코드 재구축, 의존성 업그레이드, DB migration, 실물 AI/H3 생성은 아직 실행하지 않았다.
+- 사용자 승인으로 코드 재구축을 시작했다. 의존성 업그레이드, 라이브 DB migration, 실물 AI/H3 생성은 아직 실행하지 않았다.
+- 검증된 첫 변경: Topic 158 실제 실패 이미지 3장을 provenance/hash와 함께 fixture로 보존했다. 기존 QC의 false PASS를 실패 테스트로 재현한 뒤, 경계 쌍과 동일 사진 확대 배경 일치를 결합한 검출로 세 장 모두 차단했다. 원본·축소·회전 9개 변형과 정상 full-bleed/저대비/점진적 초점 흐림/가로 사진 12개 대조군을 검사한다.
+- INFO QC에서 required none, alpha만 있고 실제 표시가 없는 overlay, 한 채널 1단계 픽셀 변경 누락, 가이드·라벨 분리 레이어와 최종 overlay 불일치를 각각 실패 테스트로 재현·수정했다. 기존 생성물·QC 저장값은 덮어쓰지 않았다.
+- M0 읽기 전용 감사 실측: orphan invocation 6건, completed+quality fail 25건, contract mismatch 107건, stale+OK 50건, missing file 28건. legacy job-quality의 일부 연결은 topic/stage/시간 범위 상관관계이며 확정 FK가 아니다. 발견 사항은 삭제하거나 PASS로 덮지 않는다.
+- M1의 store/runner, stable key, lease·예산, 결과+successor transaction을 구현했다. 5단계 native generator는 attempt별 DB/file clone에서 실행하고 lease·input·허용된 topic/table delta를 재검사해 승격한다. 호출별 IPC 예산 reservation과 결과 기록을 연결했다. 파일과 DB의 원자성을 주장하지 않으며 journal 미확정은 수동 reconciliation 대상이다. 신규 durable migration은 명시적 opt-in과 프로젝트 tmp 내부 격리 조건으로 보호한다. native CLEAN은 검증된 reference의 결정론적 renderer 경로이고 workspace-write ImageGen fallback은 차단 상태다. 운영 활성화나 실제 외부 provider 품질 검증은 아니다.
+- 운영 DB를 read-only online backup한 복사본에서 PipelineStore additive schema를 두 번 적용했다. 기존 24개 테이블 행 내용 보존, integrity_check OK, foreign_key_check 0건을 확인하고 별도 before 복사본에서 복원 검증했다. 원본 DB byte hash 변화 없음. 증거: `tmp/migration-copy-xQTCJI/report.json`. 이 검증은 store schema 범위이며 전체 서버 bootstrap/운영 전환 검증을 대신하지 않는다.
+- 별도 synthetic source 7개를 기존 실제 CLEAN/INFO renderer에 통과시켜 7+7장을 만들고, runner immutable publication과 신규 수용검사까지 연결했다. required non-none 2개, 동일 CLEAN 합성·분리 레이어·한글 라벨·파일 hash·manifest·중복/누락·최신 입력을 검사한다. 저장 PASS만 있는 깨진 PNG, 오래된 입력, 누락 레이어, 중복 이미지, 미완료 job은 거부한다. 미디어 회귀와 수용검사 합계 `node --test test/media-pipeline.test.js test/pipeline-verification.test.js` 16/16 통과. synthetic 도형 이미지는 실제 주제나 AI 생성 성공 사례가 아니다.
+- M2의 첫 수직 단면을 구현했다. 특정 JWST 문장을 주입하던 공용 대본 수정 지시를 제거하고, durable production canary의 명확한 단일 행 narration finding만 structured patch 1회로 수정한다. 전체 candidate beforeHash, 대상 행/필드, 수치·단위·순서 및 보수적 조건/부정/범위 검사를 적용하며 narration 외 값은 보존하고 ttsText만 재계산한다. 구조 검사는 의미 검증이 아니며 새 독립 검수 통과가 필수다. global repair 기본값 0 및 reviewOnly/명시적 opt-out은 유지한다.
+- 검수 실패→2번 행 patch 1회→독립 검수 2라운드→native TTS/장면표/CLEAN/INFO 7+7→사용자 검수 대기 흐름을 검증했다. 원본 생성 1회, 다른 행·claimRefs·visualStateId·행수/순서 불변, required INFO 2개, 동일 run 35/60 호출·22 attempts. 잘못된 행/숫자/조건 변경과 재검수 실패는 승격·후속 없이 중단한다. 증거: `tmp/pipeline-native-server-ryK2Jl/data/native-verification.json`, run `4dd7d446-63c2-47d5-a50c-20be17e2d0c6`. 부모가 전체 `npm test` 193/193을 직접 재실행해 통과 확인했다.
+- TTS 단일 초과 행 복구를 연결했다. 실측 5초인 2번 행만 patch 1회·독립 검수 후 2.5초로 재합성하고 나머지 6개 WAV bytes/paths를 보존했다. 무음 간격만 합성해 master 28초, 같은 run 36/60 호출, 7+7·required INFO 2개 검증. 재초과/잘못된 행/semantic 거절/취소는 미승격이다. `ttsRepairLimit:0`·`reviewOnly` continuation 전파도 수정했다. 증거: `tmp/pipeline-native-server-ANlsXB/data/native-verification.json`. 부모가 전체 214/214 직접 재실행 통과 확인.
+- 장면표는 명확한 단일 clip `weak_video_motion` finding의 `cameraMotion`만 patch 1회·독립 재검수한다. 나머지 clip, 물리상태·참조·주장·실측 timing·required INFO·상위 script/TTS는 보존한다. 모호한 finding은 상위 책임 단계와 HOLD를 기록한다. 증거: `tmp/pipeline-native-server-TbSM0l/data/native-verification.json`, run `9e115658-18c6-43cb-9aa6-cd1847aeac77`, 35호출·22 attempts·7+7. 실행 에이전트 전체 227/227, 부모 patch 계약 4/4 직접 검증. CLEAN/INFO 기존 국소 교정 경로는 중복 구현하지 않았다.
+- 저장 후보의 feasibility→순서 기반 교체를 연결했다. `pipeline_batches`와 nullable `pipeline_runs.batch_id`, 최대 3후보, 공유 호출·attempt·최초 deadline, 멱등 request key를 추가했다. `POST /api/pipeline/batches`, `GET /api/pipeline/batches/:id`, `POST /api/pipeline/batches/:id/cancel`로 조회·취소한다. 시작 계약은 `existingTopicIds`, `startContract: {stage: "script", candidatePolicy: "ordered_existing_only", referenceFailurePolicy: "next_candidate", requiredVisualStates: 7, minimumRequiredInfoOverlays: 2}` 형식이다. 현재는 기존 script가 없는 후보를 대상으로 한다.
+- 대본 호출 전 상태/근거/INFO 계약과 검증된 로컬 참조 파일 hash를 검사한다. 구조적 참조 부족만 다음 후보로 넘기며 인증·provider·코드·입력 stale·결과 불명확·일반 품질 실패는 batch 전체를 중단한다. 첫 후보 AI 생성 0회로 `needs_reference`→둘째 후보 native 생성 7+7·required INFO 2→검수 대기를 확인했다. 같은 batch 32/60호출·24 attempts, 두 run의 최초 deadline 동일. 증거: `tmp/pipeline-native-server-QJBYED/data/native-batch-ledger.json`, batch `4ab9b74b-dd50-4c2b-afb5-5229d501cca6`. 부모가 store/feasibility 16/16, native batch 6/6을 직접 재실행 통과 확인했다. 실행 에이전트 전체 249/249 통과.
+- 최종 수용검사에 batch 전체 ledger를 연결했다. 이전 후보의 미종료 작업/H3/고아 호출/미확정 attempt, 공유 카운터 초기화·deadline 연장·입력 변경·잘못된 교체 사유·탈락 후보 artifact를 거부한다. 수용검사 테스트 21/21 통과. 위 native batch DB를 독립 읽기 전용으로 검사해 2 runs/24 jobs/24 attempts/32 invocations와 실제 7+7 이미지 QC를 확인했고 원본 DB hash가 변하지 않았다.
+- 순수 timing-only 변경은 전체 generation lease hash와 완료 이미지용 visual fingerprint를 분리했다. 실제 PCM 검증 후 timing adapter가 장면표/자막/편집을 stale 처리하고, 원본 이미지·artifact DB·발행 manifest·사용자 승인은 보존한다. native 7+7 후 timing 변경에서 호출 32→32, CLEAN/INFO 추가 호출 0을 확인했다. 의미·물리상태·참조 crop·prompt 변경은 재사용하지 않으며 INFO 사용자 입력만 바뀌면 CLEAN을 유지한다. 증거: `tmp/pipeline-native-server-uEh8wm/data/native-timing-reuse.json`. 실행 에이전트 전체 267/267 통과.
+- 부모가 타이밍 재사용을 최종 수용검사에도 연결하고 native timing 시나리오를 재실행했다. 최신/원본 snapshot·DB 및 발행 manifest binding·실제 픽셀 QC를 함께 검사하며 14개 재사용을 확인했다. 현재 snapshot 누락, 내레이션 변경, manifest binding 제거는 실패한다. 부모 직접 native timing 1/1 및 수용검사+visual 계약 26/26 통과. timing adapter는 아직 local export이고 동일 scene identity·segment당 shot 1개·gap 없는 PCM만 수용하며 caption/edit는 만료까지만 처리한다.
+- M3 official cover는 verified asset metadata의 `requiredBounds`(EXIF 방향 적용 원본 전체 정규화 좌표)를 source identity·cached SHA-256·입력 revision에 결속하고 그 영역을 보존하도록 위치를 조정한다. 기존 `focusBounds` crop fallback 의미는 유지한다. 선언이 없으면 선택 영역 전체를 보존하며 추가 절단이 필요할 때 HOLD, 선언 영역이 세로 cover에 들어가지 않거나 panel 밖이면 HOLD한다. renderer가 필수 요소를 확인했다고 기록하던 가짜 의미 PASS는 제거했다. 좌표가 실제 필수 요소를 모두 포함하는지는 여전히 독립 시각 검수 대상이다. 기존 JWST 가로 panel은 검증된 보존 영역 또는 다른 근거 없이는 막힐 수 있으며 임의 좌표를 넣지 않았다.
+- 실행 에이전트 전체 회귀 278/278 통과 후 부모가 실제 Python crop 계약 9/9, native 불가능 crop(후속 검수 AI 0·미승격) 및 가능한 off-center crop(7+7) 2/2를 직접 재실행했다. 합성 red rectangle의 전체 너비/높이 보존을 픽셀로 검사하고 출력도 열어 확인했다. 실 canary 품질 검증과 구분한다.
+- M4 기존 대시보드에 durable 상태 패널과 `GET /api/pipeline/topics/:topicId`를 연결했다. 실행·기계 품질·입력 최신성·사용자 승인·조치 담당·run/batch 예산을 분리한다. 조회는 생성하지 않으며 명시 클릭 시작, 멱등 재요청, 실행/검수 대기 중 중복 409, 공유 batch 취소, 비활성 503을 처리한다. 독립 검수 실패를 생성자 PASS로 덮지 않는다. timing-only 최신성은 원본 job snapshot·현재 fingerprint·발행 manifest·실제 파일 hash를 모두 확인하며 미완료 job의 stale은 유지한다. 부모가 DOM 동작+격리 HTTP 20/20을 직접 재실행하고 패널 fixture 스크린샷을 확인했다. 실행 에이전트 기존 agent-browser로 패널 상호작용도 검증했다. batch 생성 UI 및 terminal resume는 아직 미완료다.
+- M4 실제 전체 대시보드를 격리 HTTP에서 열어 주제 선택·CLEAN/INFO 이동·stale/missing 승인 거부·주제 전환 race·현재 hash 결속 승인·부분/전체 승인 구분·새로고침 후 영상 자동 진입 없음·생성 POST 없음까지 브라우저로 검증했다. 증거: `tmp/dashboard-full-m4-v2/browser-evidence.json`, desktop/mobile 스크린샷. TTS/environment 조회만 GPU probe 방지를 위해 mock했고 이미지/QC/승인은 synthetic이다. 부모가 화면을 확인한 뒤 이미 승인된 상태에서 재승인을 요구하던 안내를 수정했다. 실제 run 상태는 유지하고 승인 기록/별도 영상 작업을 안내한다. 부모 직접 DOM+격리 HTTP+fixture 서버 종료 테스트 22/22 통과. 이 검증은 실제 주제의 사용자 승인이 아니다.
+- official renderer에 출력 없는 `--preflight`를 추가해 실제 렌더와 기하 계산을 공유한다. 최초 continuation에서 대본 등록 전 검사하고 provider 직전에도 재검사한다. crop 불가능·보존 영역 누락만 구조적 `needs_reference`로 처리하며 Python/decode/코드 오류는 후보 교체 없이 HOLD한다. 부모 직접 crop/feasibility 18/18, native 사전 차단·다음 후보 공유 예산·Python 부재 4/4 통과. 불가능 후보는 대본 job 및 provider 호출 0이다.
+- 실제 저장 자료 읽기 전용 조사: `tmp/read-only-crop-evidence.json`. Topic 158 이미지 3개와 Topic 159 이미지 10개의 decoded hash 불일치는 원본 SHA와 파생 파일 SHA를 혼동한 소비자 계약 오류였다. 13/13 원본 SHA가 DB와 일치했고 동일 normalizer의 tmp 재생성 bytes도 13/13 기존 decoded와 일치했다(`tmp/reference-source-audit.json`, `tmp/reference-legacy-proof.json`). JWST brief stale 및 보존 영역 부재는 별도 남은 문제다. 기존 crop 4상태의 비결속 기하 진단은 required_bounds_missing이며 실 canary 준비 완료를 뜻하지 않는다.
+- 두 참조 다운로드 경로에 versioned `verification.contentBinding`을 추가했다. 원본 SHA 의미를 유지하면서 파생 contentHash·양쪽 경로·변환·PDF page를 별도 결속하고 feasibility/crop/snapshot 소비자를 통일했다. legacy는 자동 승격하지 않고 read-only 재생성 proof만 제공한다. 운영 DB/cache 변경 없음. 부모 직접 참조 binding/crop/feasibility 20/20 통과 및 재생성 이미지 확인. 이미지 테스트는 실제 normalizer, PDF 변환 프로세스는 Poppler 부재로 mock이므로 실제 PDF 렌더 검증은 미완료다.
+- 전체 server bootstrap을 운영 DB online backup 복사본에서 검증했다. 부모 직접 `node scripts/check-server-bootstrap-copy.mjs` 재실행: 기존 24테이블 내용 보존(복사본 경로 재매핑 후 비교), migration 12 기록·4테이블·12컬럼 추가, disabled 503/enabled 200, 두 번째 기동 idempotent, integrity OK/FK 0, 복구 clone 원본 snapshot 일치, 원본 DB·참조 bytes 불변. 외부 프로세스/네트워크 0. 증거: `tmp/full-bootstrap-copy-apbFHX/report.json`. 기동마다 동일 benchmark의 updated_at을 갱신하던 동작도 실제 필드 변경 시에만 UPDATE하도록 수정했다. live durable 활성화는 여전히 차단 상태다.
+- durable Vox는 명시적인 프로젝트 내부 `DINOBOX_VOXCPM_MODEL_DIR`와 필수 모델 파일을 대본/음성 호출 전에 검사한다. local directory + local_files_only 및 격리 HF cache/offline 환경으로 미승인 다운로드를 차단했다. legacy 호출 방식은 유지한다. durable renderer Python은 프로젝트 venv 기본값이며 명시 설정과 별도 Poppler 경로를 유지한다. 부모 직접 로컬 모델·offline·선행 HOLD·renderer 설정 테스트 4/4 및 구문/diff 검사 통과. 패키지는 설치돼 있으나 프로젝트 내부 Vox 모델 경로는 미설정이고 실제 모델/GPU 합성은 미검증이다.
+- 실 canary의 남은 경계는 명시적인 reference 재결속, 유효한 brief와 필수 영역 보존 계약, 프로젝트 내부 모델 준비·실제 provider/Vox 검증 및 별도 운영 전환 승인이다. 이미지만 정상임을 증명한 legacy receipt를 자동 품질 PASS로 사용하지 않는다.
+- INFO 완료 artifact에 versioned clip binding을 추가했다. 모든 clip이 referencePolicy=none인 독립 구도에 한해 원본 job/snapshot·manifest·현재 clip 계약·bytes를 검증하고 타 clip CLEAN bytes/INFO 사용자 입력 변경을 분리한다. INFO 2번 수정 시 CLEAN 7개와 다른 INFO 6개·승인 유지, 미승인 CLEAN 2번 변경 시 CLEAN/INFO 2번만 stale을 확인했다. native 실제 renderer 7+7 후 호출 32→32, 파일·manifest·ledger 불변. 부모 직접 계약 7/7 및 native timing+clip reuse 1/1 재실행 통과. 연결된 reference 정책은 보수적으로 전체 의존성을 유지한다. 일반 CLEAN 부분 요청이 전체를 몰래 enqueue하던 경로는 HOLD로 막았다.
+- 동일 run 명시 교정 API `POST /api/pipeline/runs/:runId/clean-repairs`를 구현했다. 입력은 clipIndex/requestKey/beforeHash/inputRevision/panelCrop이며 검증된 원본·requiredBounds 안의 subcrop만 허용한다. 독립 referencePolicy=none·미승인 target pair·clip당 1회 제한, 같은 run/batch 예산과 deadline 유지. CLEAN 독립 재검수→해당 INFO 재생성/독립 검수→검수 대기, 호출 32→37, active 14/history 16, 다른 12개 승인/파일/발행 manifest 보존을 확인했다. 해당 video만 stale이며 영상 생성은 없다. verifier도 supersedes history 및 clip binding 검증을 연결했다. 부모 직접 repair/store+verifier 25/25, native 성공·검수 거절·취소/늦은 응답 3/3 통과. 증거: `tmp/pipeline-native-server-mf6rZ3/data/native-clean-repair-verification.json`. 명시 HTTP API이며 UI 교정 입력은 아직 없다. 실제 AI 품질 검증이나 자동 의미 patch를 완료한 것으로 보지 않는다.
+- INFO의 단일 clip unreadable/clutter 실패는 기계 QC 통과 시 labelPositions만 patch 1회·독립 재검수한다. beforeHash·clip·좌표·실제 변경을 검사하고 spec/claim/guide geometry/required INFO/CLEAN은 보존한다. durable canary 기본 1회, reviewOnly/explicit0 및 명시 CLEAN 교정 안에서는 비활성이다. 부모 native 성공·재실패·none/geometry/claim 변조·취소·reviewOnly·0회 제한 8개 PASS를 직접 확인했다. 성공은 32→35호출, 실패 clip renderer만 2회이고 다른 INFO는 각 1회다. 증거: `tmp/pipeline-native-server-LxAVbA/data/native-info-repair.json`. 의미 spec 수정은 지원하지 않는다.
+- 전체 회귀 301개 중 300 PASS/1 FAIL을 기록했다. off-center native의 일시적인 runIsolatedProvider export 부재 오류는 현재 재현되지 않았고 실행 에이전트의 같은 시나리오 재실행은 PASS다. 당시 원인은 확정하지 않았으며 전체 회귀가 모두 통과했다고 보고하지 않는다. 누락된 CLEAN/INFO repair 단위 테스트를 package test/pipeline:test 양쪽 명시 목록에 추가했다.
+- 최초 shotlist 발행 전 명확한 단일 `narration_expression` finding은 상위 script 한 행 patch·독립 검수·그 TTS segment만 재합성·장면표 재검수를 거쳐 같은 run으로 이어간다. physical storyboard/required INFO/다른 6 WAV 및 원본 음성 bytes 보존, 32→38호출, 7+7·영상 0·검수 대기를 확인했다. 부모 직접 계약 6/6, native 성공·재발·승인 script 보호 3/3 통과. 증거: `tmp/pipeline-native-server-AUWvwq/data/native-upstream-repair.json`. run당 1회이며 before snapshot·파일 hash·실측 길이를 승격 시 재검사한다. 이미 shotlist/visual/review가 있거나 모호·물리/사실 수정이면 HOLD한다. 기존 발행물까지 상위 rollback을 자동 확대하지 않았다.
+- 실제 별도 process A에서 CLEAN 3개 완료 후 다음 job claim 상태로 종료하고 B가 같은 DB/run을 재개해 7+7을 완주했다. 기존 3장·QC·발행 manifest·승인·완료 job 불변, calls 19→32, interrupted claim 때문에 attempts 23, active/orphan/video 0. provider 시작 후 결과 불명확은 calls 20→20/reconcile HOLD, 취소는 19→19/실행 0이다. 부모 restart 3/3 직접 재실행 통과. 증거: `tmp/pipeline-restart-srAEzo/data/restart-verification.json`. 이후 소스 고정 전체 회귀 328/328 PASS를 부모가 확인했다. 그 뒤 독립 검토에서 same-revision 원본 snapshot 검증 우회, manifest header/성공 attempt 소속 검사 누락, commit 직전 deadline/lease 경계 누락을 찾아 수정했다. 동일 revision도 원본 검증 필수, manifest run/job/lease를 succeeded attempt에 결속, 두 callback 이후 최종 fence 실패 시 primary 파일/DB rollback과 budget HOLD를 유지한다. 최신 변경의 실행 에이전트 관련 회귀 81/81, 부모 직접 store+verifier 반례 45/45 PASS. 328 전체 통과는 이 마지막 보완 이전 결과로 구분한다.
+- legacy orphan을 read-only 재분류했다. IDs 51/96/97/127/128/156은 모두 Topic 159, job 연결·완료 시각·duration 없이 running 기록만 남아 있다. 결과 불명확 6건이며 종료 확인이나 현재 active 증거는 없다(후자가 실행 중이 아님을 증명하지는 않는다). 신규 durable run/batch 통계와 분리하고 삭제/성공처리하지 않았다. 증거: `tmp/legacy-invocation-disposition.json`; 원본 DB SHA 불변.
+- 위 흐름은 실제 생성 함수·검수 판정·renderer·승격 코드를 실행하지만 AI/Vox 응답과 원본 이미지는 fixture다. 실제 AI의 사실/의미/시각 검증 성공 사례가 아니다. clip별 변경 영향 처리의 전체 확대, 실 provider 무개입 canary는 미완료다. 신규 discovery/research는 위 저장 후보 교체와 구분하며, 격리 검증만으로 전체 완주를 완료 처리하지 않는다.
 - 단계마다 좁은 변경 묶음과 검증 증거를 남긴다. commit/push는 해당 실행 맥락에서 사용자 승인을 받는다.
 - Topic 159를 사람이 고쳐 성공 사례로 만들지 않는다.
 - 기존 47 PASS, gold 0 misses, job completed 중 어느 것도 실제 완주 증거 대신 사용하지 않는다.
 - 라이브 DB를 반복 실험장으로 쓰지 않는다.
 - 현 스택을 지우거나 UI를 새로 만드는 것으로 실패 원인을 덮지 않는다.
 - 최신 버전이라는 이유로 provider를 교체하지 않는다. 필요하면 동일 fixture와 비용/지연/정확도 비교 후 별도 결정한다.
+
+## 2026-09-08 실제 제작 검증 결과 — 완성 미달
+
+- `tmp/actual-production-20260908/result.html`에서 실제 결과를 열 수 있다. `final-evidence.json`에 호출·파일 hash·실패 및 재검수 기록을 보존했다.
+- 정식 run `28b75d33-6494-4f97-ad7a-7ee2db5ef8e3`은 `needs_reference`로 blocked이며 정식 artifacts는 0개다. CLEAN 7장 + INFO 7장, 필수 INFO 최소 2장 목표는 달성하지 못했다. 별도 진단 산출물을 이 run의 성공으로 승격하지 않았다.
+- 프로젝트 내부 `models/voxcpm2`에 공개 VoxCPM2 필수 모델을 준비하고 offline 실제 합성을 실행했다. 진단 내레이션 7구간, 합계 17.76초 PCM 음성을 생성했다. 길이·파형은 확인했으나 청취 검수는 하지 않았다. 앞선 모델 미준비 기록은 이 실행 이전 상태다.
+- native 시각 검수에서 경로 문자열만으로는 실제 픽셀 전달이 보장되지 않는 결함을 확인했다. CLEAN/INFO 독립 검수와 INFO layout 요청에 SDK `local_image` 첨부를 명시했다. 그 이전 path-only 검수는 실제 이미지를 보았다는 증거로 간주하지 않는다.
+- 최신 manifest와 stale shotlist 사이에 치수선 요구·2패널 허용·필수 INFO 누락 충돌이 있었다. 최신 manifest를 실제 AI에 제공해 별도 canonical 진단 계약을 생성하고 VS07 지상 시험 CLEAN과 `실물 크기` factual badge INFO를 제작했다. 배지 위치 국소 수정 후 실제 이미지 첨부 독립 CLEAN·INFO 재검수가 모두 통과했다. 부모도 PNG를 직접 열고 결과 JSON·파일 hash를 확인했다. 필수 INFO 진단 통과는 **1쌍**이며 전체 생산 완주가 아니다.
+- VS02/06 필수 구조 전체를 보존하는 세로 참조와 나머지 장면 계약 정합성은 미해결이다. NASA 개별 도식·step 영상 조사만으로 해결됐다고 처리하지 않았다. VS03 수치는 NASA 현재 deployment 페이지의 약 2m와 이전 explorer의 1.22m가 상충하므로 새로 발견한 숫자로 무조건 치환하지 않았다.
+- 마지막 변경 후 부모 직접 `test/quality-gates.test.js` 14/14 및 `test/pipeline-server.test.js` 14/14 통과. 후자는 mock 기반 회귀이며 실 제작 성공 증거와 구분한다. 마지막 변경 이후 전체 suite 재실행은 하지 않았다.
+- 운영 DB SHA256 `e0c2f3d9344a340d946cf009383eb6a77c5d6a852b82514111cd7d3707bab5b9` 불변을 부모가 재확인했다. 운영 원본·실패 기록 보존, 이번 실제 검증 변경의 commit/push 및 운영 전환은 하지 않았다.
 
 ## 공식 출처
 

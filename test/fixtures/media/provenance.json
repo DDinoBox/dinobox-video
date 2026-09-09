@@ -1,0 +1,26 @@
+{
+  "description": "Historical Topic 158 artifacts that passed QC despite a sharp contained photo over a blurred enlarged background. Exact local artifact bytes, retained as known-bad regression inputs; no live DB or network is required.",
+  "sourcePage": "https://www.usbr.gov/uc/rm/crsp/gc/",
+  "policyReference": "https://www.usbr.gov/main/about/policies/",
+  "copiedAt": "2026-09-05",
+  "cases": [
+    {
+      "file": "glen-canyon-blurred-contain-01.png",
+      "sourceImageUrl": "https://www.usbr.gov/uc/img/gallery/gcd/images/1.jpg",
+      "sha256": "0cb90960252da0402d615375b77df8ed10b10808de9939a0fe41afb627a2f934",
+      "expectedPattern": "letterbox"
+    },
+    {
+      "file": "glen-canyon-blurred-contain-02.png",
+      "sourceImageUrl": "https://www.usbr.gov/uc/img/gallery/gcd/images/2.jpg",
+      "sha256": "f4dfa6370b6568416b9a3c4664d4969bfabd2170ab842d3d11ae7d2adf1c94e2",
+      "expectedPattern": "letterbox"
+    },
+    {
+      "file": "glen-canyon-blurred-contain-03.png",
+      "sourceImageUrl": "https://www.usbr.gov/uc/img/gallery/gcd/images/3.jpg",
+      "sha256": "03465927fc27f99e996547023696e5f048107fedc8c40218f11cee9dc3f10ae2",
+      "expectedPattern": "letterbox"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -7,14 +7,6 @@ import { evaluateGoldQualityCase, validateEvidencePacket, validateProductionBrie
 const currentFile = fileURLToPath(import.meta.url);
 const root = path.resolve(path.dirname(currentFile), "..");
 const benchmarkDir = path.join(root, "benchmarks");
-const dbPath = process.env.DINOBOX_DB_PATH || path.join(root, "data", "shorts.db");
-const benchmarks = readdirSync(benchmarkDir).filter((name) => name.endsWith(".json"))
-  .map((name) => JSON.parse(readFileSync(path.join(benchmarkDir, name), "utf8")));
-const goldCases = JSON.parse(readFileSync(path.join(root, "test", "fixtures", "quality-gold-cases.json"), "utf8")).cases || [];
-
-function safely(getter, fallback) {
-  try { return getter(); } catch { return fallback; }
-}
 
 function parseJson(value, fallback) {
   try { return JSON.parse(value || ""); } catch { return fallback; }
@@ -55,30 +47,61 @@ export function buildBenchmarkReportCase(benchmark, stored = {}) {
   };
 }
 
+export function runQualityReport(options = {}) {
+  const dbPath = options.dbPath || process.env.DINOBOX_DB_PATH || path.join(root, "data", "shorts.db");
+  const report = { database: dbPath, generatedAt: new Date().toISOString(), errors: [], exitCode: 0 };
+  let db;
+  let phase = "database_unavailable";
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    phase = "database_query_failed";
+    db.exec("BEGIN");
+    const queries = {
+      topic: db.prepare("SELECT id FROM topics WHERE title LIKE '%' || ? || '%' ORDER BY id DESC LIMIT 1"),
+      fact: db.prepare("SELECT claims_json, raw_json, status FROM fact_checks WHERE topic_id = ?"),
+      brief: db.prepare("SELECT status, visual_states_json FROM production_briefs WHERE topic_id = ?"),
+      findings: db.prepare("SELECT code, stage FROM quality_findings WHERE topic_id = ? ORDER BY id"),
+      invocations: db.prepare("SELECT COUNT(*) AS count FROM ai_invocations WHERE topic_id = ?")
+    };
+    const benchmarks = options.benchmarks ?? readdirSync(benchmarkDir).filter(name => name.endsWith(".json"))
+      .map(name => JSON.parse(readFileSync(path.join(benchmarkDir, name), "utf8")));
+    const goldCases = options.goldCases ?? JSON.parse(readFileSync(path.join(root, "test", "fixtures", "quality-gold-cases.json"), "utf8")).cases;
+    const results = benchmarks.map(benchmark => {
+      const topic = queries.topic.get(String(benchmark.topicSelector?.titleIncludes || ""));
+      return buildBenchmarkReportCase(benchmark, {
+        topic,
+        fact: topic ? queries.fact.get(topic.id) : null,
+        brief: topic ? queries.brief.get(topic.id) : null,
+        findings: topic ? queries.findings.all(topic.id) : [],
+        invocationCount: topic ? queries.invocations.get(topic.id).count : 0
+      });
+    });
+    db.exec("COMMIT");
+    phase = "quality_evaluation_failed";
+    const goldResults = goldCases.map(evaluateGoldQualityCase);
+    const goldRegression = {
+      caseCount: goldResults.length,
+      misses: goldResults.flatMap(result => result.misses.map(code => ({ caseKey: result.caseKey, code }))),
+      missCount: goldResults.reduce((total, result) => total + result.misses.length, 0)
+    };
+    const totals = {
+      recordedKnownBadMisses: results.reduce((total, row) => total + row.recordedKnownBadMisses.length, 0),
+      goldRegressionMisses: goldRegression.missCount,
+      legacyPassReferenceGaps: results.reduce((total, row) => total + row.legacyPassReferenceGaps.length, 0),
+      aiInvocations: results.reduce((total, row) => total + row.invocationCount, 0)
+    };
+    Object.assign(report, { cases: results, goldRegression, totals, exitCode: totals.recordedKnownBadMisses || totals.goldRegressionMisses ? 1 : 0 });
+  } catch (error) {
+    report.errors.push({ code: phase, message: error.message });
+    report.exitCode = 2;
+  } finally { db?.close(); }
+  return report;
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(currentFile)) {
-  let db = null;
-  if (existsSync(dbPath)) db = safely(() => new DatabaseSync(dbPath, { readOnly: true }), null);
-  const results = benchmarks.map((benchmark) => {
-    const title = String(benchmark.topicSelector?.titleIncludes || "");
-    const topic = db ? safely(() => db.prepare("SELECT id FROM topics WHERE title LIKE '%' || ? || '%' ORDER BY id DESC LIMIT 1").get(title), null) : null;
-    const fact = topic ? safely(() => db.prepare("SELECT claims_json, raw_json, status FROM fact_checks WHERE topic_id = ?").get(topic.id), null) : null;
-    const brief = topic ? safely(() => db.prepare("SELECT status, visual_states_json FROM production_briefs WHERE topic_id = ?").get(topic.id), null) : null;
-    const findings = topic ? safely(() => db.prepare("SELECT code, stage FROM quality_findings WHERE topic_id = ? ORDER BY id").all(topic.id), []) : [];
-    const invocationCount = topic ? Number(safely(() => db.prepare("SELECT COUNT(*) AS count FROM ai_invocations WHERE topic_id = ?").get(topic.id)?.count, 0)) : 0;
-    return buildBenchmarkReportCase(benchmark, { topic, fact, brief, findings, invocationCount });
-  });
-  const goldResults = goldCases.map(evaluateGoldQualityCase);
-  const goldRegression = {
-    caseCount: goldResults.length,
-    misses: goldResults.flatMap((result) => result.misses.map((code) => ({ caseKey: result.caseKey, code }))),
-    missCount: goldResults.reduce((total, result) => total + result.misses.length, 0)
-  };
-  const totals = {
-    recordedKnownBadMisses: results.reduce((total, row) => total + row.recordedKnownBadMisses.length, 0),
-    goldRegressionMisses: goldRegression.missCount,
-    legacyPassReferenceGaps: results.reduce((total, row) => total + row.legacyPassReferenceGaps.length, 0),
-    aiInvocations: results.reduce((total, row) => total + row.invocationCount, 0)
-  };
-  console.log(JSON.stringify({ database: db ? path.relative(root, dbPath) : "unavailable", generatedAt: new Date().toISOString(), cases: results, goldRegression, totals }, null, 2));
-  db?.close();
+  const args = process.argv.slice(2);
+  const valid = !args.length || (args.length === 2 && args[0] === "--db" && !args[1].startsWith("--"));
+  const report = valid ? runQualityReport({ dbPath: args[1] }) : { errors: [{ code: "invalid_arguments", message: "Usage: node scripts/quality-eval-report.mjs [--db PATH]" }], exitCode: 2 };
+  console.log(JSON.stringify(report, null, 2));
+  process.exitCode = report.exitCode;
 }

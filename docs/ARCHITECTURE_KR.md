@@ -39,9 +39,9 @@ queued -> running -> completed
 
 - `foreign_keys = ON`
 - `busy_timeout = 5000`
-- 현재 Node 내장 SQLite가 3.50.4이므로 다중 writer WAL은 사용하지 않는다.
+- 2026-09-05 실측은 Node v24.19.0 / SQLite 3.53.3이다. 과거 3.50.4의 WAL-reset 버그 제한은 수정 버전 범위에 들어왔지만 journal mode는 변경하지 않았다.
 - DB 쓰기는 로컬 Node 프로세스의 동기 연결 하나로 직렬화한다.
-- Node가 SQLite 3.50.7 이상 또는 3.51.3 이상을 포함하는 버전으로 올라간 뒤 WAL 전환을 다시 검토한다.
+- WAL 전환은 버전만으로 결정하지 않고 격리 DB의 경쟁·checkpoint·복구 테스트 후 별도 검토한다. 실행 중 DB 백업은 main 파일 복사 대신 SQLite online backup을 사용한다.
 - 스키마 변경은 `schema_migrations`에 버전을 기록한다.
 
 ## AI 실행

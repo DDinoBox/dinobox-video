@@ -2,8 +2,9 @@ import json
 import re
 import sys
 from pathlib import Path
+from statistics import median
 
-from PIL import Image, ImageChops, ImageFilter, ImageStat
+from PIL import Image, ImageChops, ImageFilter, ImageOps, ImageStat
 
 
 def image_signature(image):
@@ -21,6 +22,59 @@ def similarity(left, right):
 def edge_strength(image):
     edges = image.convert("L").filter(ImageFilter.FIND_EDGES)
     return float(ImageStat.Stat(edges).mean[0])
+
+
+def detect_repeated_background_panel(image):
+    # A natural sky or shallow focus is not padding. Require paired hard seams
+    # AND a blurred enlargement of the same central panel in both outer bands.
+    for pattern, frame in (("letterbox", image), ("pillarbox", image.transpose(Image.Transpose.ROTATE_90))):
+        scale = min(256 / max(frame.width, 1), 512 / max(frame.height, 1))
+        width = max(16, round(frame.width * scale))
+        height = max(16, round(frame.height * scale))
+        frame = frame.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
+        profile = [0.0]
+        for y in range(1, height):
+            difference = ImageChops.difference(frame.crop((0, y - 1, width, y)), frame.crop((0, y, width, y + 1)))
+            profile.append(sum(ImageStat.Stat(difference).mean) / 3)
+
+        def seam_candidates(low, high):
+            candidates = []
+            for y in range(round(height * low), round(height * high)):
+                neighbors = profile[max(1, y - 5):y] + profile[y + 1:y + 6]
+                prominence = profile[y] / max(median(neighbors), .1)
+                if profile[y] >= 10 and prominence >= 2:
+                    candidates.append((prominence, y))
+            selected = []
+            for _, y in sorted(candidates, reverse=True):
+                if all(abs(y - previous) > 4 for previous in selected):
+                    selected.append(y)
+                if len(selected) == 5:
+                    break
+            return selected
+
+        for top in seam_candidates(.1, .45):
+            for bottom in seam_candidates(.55, .9):
+                if abs(top + bottom - height) > height * .025:
+                    continue
+                panel = frame.crop((0, top, width, bottom))
+                enlarged = ImageOps.fit(panel, frame.size, method=Image.Resampling.LANCZOS)
+                bands = [(4, round(height * .03), width - 4, top - 4),
+                         (4, bottom + 4, width - 4, round(height * .97))]
+                if any(box[3] <= box[1] for box in bands):
+                    continue
+                for radius in (width * .012, width * .025, width * .05):
+                    background = enlarged.filter(ImageFilter.GaussianBlur(radius))
+                    errors = [sum(ImageStat.Stat(ImageChops.difference(frame.crop(box), background.crop(box))).mean) / 3 for box in bands]
+                    if max(errors) <= 8:
+                        bounds = [0, top / height, 1, (bottom - top) / height] if pattern == "letterbox" else [1 - bottom / height, 0, (bottom - top) / height, 1]
+                        return {
+                            "detected": True,
+                            "pattern": pattern,
+                            "bounds": [round(value, 4) for value in bounds],
+                            "backgroundError": [round(error, 2) for error in errors],
+                            "seamContrast": [round(profile[top], 2), round(profile[bottom], 2)],
+                        }
+    return {"detected": False}
 
 
 def detect_blurred_contain_inset(image):
@@ -75,10 +129,14 @@ def detect_blurred_contain_inset(image):
         and small["sharpnessRatio"] >= 2.4
     )
     pattern = "small_inset" if small_detected else "letterbox" if detected_pair and detected_pair[0] == "top" else "pillarbox" if detected_pair else "none"
+    repeated_panel = detect_repeated_background_panel(image) if pattern == "none" else {"detected": False}
+    if repeated_panel["detected"]:
+        pattern = repeated_panel["pattern"]
     detected = pattern != "none"
     return {
         "detected": detected,
         "pattern": pattern,
+        "repeatedBackgroundPanel": repeated_panel,
         "centerEdgeStrength": round(full["centerEdges"], 2),
         "surroundEdgeStrength": round(full["surroundEdges"], 2),
         "sharpnessRatio": round(full["sharpnessRatio"], 2),
@@ -158,8 +216,10 @@ def inspect_image(file_path, references):
 
 
 def changed_pixel_count(image):
-    histogram = image.convert("L").histogram()
-    return sum(histogram[1:])
+    red, green, blue = image.convert("RGB").split()
+    # Luma conversion rounds small channel differences to zero.
+    difference = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    return sum(difference.histogram()[1:])
 
 
 def boxes_overlap(left, right):
@@ -214,11 +274,20 @@ def inspect_info(job):
             "checks": {"sameDimensions": False},
         }
 
+    reconstructed_overlay = Image.alpha_composite(guides, label_layer)
+    layer_diff = ImageChops.difference(reconstructed_overlay, overlay)
+    layers_match = all(channel.getbbox() is None for channel in layer_diff.split())
+    if not layers_match:
+        errors.append("INFO 오버레이가 분리된 가이드·라벨 레이어의 합성 결과와 다릅니다.")
+
     alpha = overlay.getchannel("A")
     alpha_histogram = alpha.histogram()
     overlay_pixels = sum(alpha_histogram[1:])
     overlay_coverage = overlay_pixels / max(1, width * height)
-    kind = str((job.get("spec") or {}).get("type", "none"))
+    spec = job.get("spec") or {}
+    kind = str(spec.get("type", "none"))
+    if spec.get("requiresOverlay") is True and (kind == "none" or overlay_coverage < 0.0005):
+        errors.append("필수 INFO를 none 또는 빈 오버레이로 대체할 수 없습니다.")
     if kind == "none" and overlay_pixels:
         errors.append("INFO 없음 장면에 그래픽이 추가되었습니다.")
     if kind != "none" and overlay_coverage < 0.0005:
@@ -227,6 +296,10 @@ def inspect_info(job):
         errors.append(f"INFO 그래픽이 화면을 너무 많이 덮습니다: {overlay_coverage * 100:.1f}%")
 
     reconstructed = Image.alpha_composite(clean, overlay).convert("RGB")
+    visible_overlay_pixels = changed_pixel_count(ImageChops.difference(reconstructed, clean.convert("RGB")))
+    visible_overlay_coverage = visible_overlay_pixels / max(1, width * height)
+    if kind != "none" and visible_overlay_coverage < 0.0005:
+        errors.append("INFO 오버레이가 CLEAN 위에 실제로 표시되지 않거나 지나치게 작습니다.")
     reconstruction_diff = ImageChops.difference(reconstructed, info)
     reconstruction_changed = changed_pixel_count(reconstruction_diff)
     if reconstruction_changed:
@@ -242,7 +315,6 @@ def inspect_info(job):
         errors.append(f"오버레이 바깥에서 CLEAN 픽셀 {outside_changed}개가 변경되었습니다.")
 
     render = job.get("render") or {}
-    spec = job.get("spec") or {}
     expected_labels = [str(value).strip() for value in spec.get("labels", []) if str(value).strip()][:2]
     if kind == "none":
         expected_labels = []
@@ -350,6 +422,7 @@ def inspect_info(job):
 
     checks = {
         "sameDimensions": same_dimensions,
+        "deterministicLayers": layers_match,
         "deterministicComposite": reconstruction_changed == 0,
         "cleanPreservedOutsideOverlay": outside_changed == 0,
         "labelsMatchSpec": labels_match,
@@ -374,6 +447,7 @@ def inspect_info(job):
         "height": height,
         "aspectRatio": round(width / height, 4) if height else 0,
         "overlayCoverage": round(overlay_coverage, 6),
+        "visibleOverlayCoverage": round(visible_overlay_coverage, 6),
         "outsideChangedPixels": outside_changed,
         "reconstructionChangedPixels": reconstruction_changed,
         "renderedLabels": rendered_labels,
